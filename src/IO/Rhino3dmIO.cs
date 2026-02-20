@@ -33,18 +33,15 @@ namespace SplineSculptor.IO
 
             foreach (var poly in scene.Polysurfaces)
             {
-                // Create a group for each polysurface
-                var group = new Group { Name = poly.Name };
-                int groupIndex = file.AllGroups.Add(group);
-
                 foreach (var surf in poly.Surfaces)
                 {
                     var rhinoSurf = ToRhino(surf.Geometry);
                     var attr = new ObjectAttributes();
                     attr.ColorSource = ObjectColorSource.ColorFromObject;
                     attr.ObjectColor = GodotColorToDrawing(surf.SurfaceColor);
-                    attr.Name = surf.Id.ToString();
-                    attr.AddToGroup(groupIndex);
+                    // Encode polysurface identity in the object name so we can reconstruct
+                    // grouping on load without relying on the Rhino Group API.
+                    attr.Name = $"SS|{poly.Id}|{poly.Name}|{surf.Id}";
 
                     file.Objects.AddSurface(rhinoSurf, attr);
                 }
@@ -70,8 +67,8 @@ namespace SplineSculptor.IO
 
             var scene = new SculptScene { FilePath = path };
 
-            // Map Rhino group index → Polysurface
-            var groupMap = new System.Collections.Generic.Dictionary<int, Polysurface>();
+            // Map polysurface-guid-string → Polysurface (reconstructed from Name encoding)
+            var groupMap = new System.Collections.Generic.Dictionary<string, Polysurface>();
 
             foreach (var obj in file.Objects)
             {
@@ -85,18 +82,21 @@ namespace SplineSculptor.IO
                 if (obj.Attributes.ColorSource == ObjectColorSource.ColorFromObject)
                     surf.SurfaceColor = DrawingColorToGodot(obj.Attributes.ObjectColor);
 
-                // Recover polysurface grouping
-                var groups = obj.Attributes.GetGroupList();
-                int groupKey = (groups != null && groups.Length > 0) ? groups[0] : -1;
-
-                if (!groupMap.TryGetValue(groupKey, out var poly))
+                // Recover polysurface grouping from encoded Name: "SS|polyGuid|polyName|surfGuid"
+                string polyKey = "default";
+                string polyName = "Polysurface";
+                var nameParts = obj.Attributes.Name?.Split('|');
+                if (nameParts?.Length >= 3 && nameParts[0] == "SS")
                 {
-                    string polyName = groupKey >= 0
-                        ? (file.AllGroups.FindIndex(groupKey)?.Name ?? "Polysurface")
-                        : "Polysurface";
+                    polyKey  = nameParts[1];
+                    polyName = nameParts[2];
+                }
+
+                if (!groupMap.TryGetValue(polyKey, out var poly))
+                {
                     poly = new Polysurface { Name = polyName };
                     scene.InternalAdd(poly);
-                    groupMap[groupKey] = poly;
+                    groupMap[polyKey] = poly;
                 }
 
                 poly.AddSurface(surf);
@@ -173,11 +173,11 @@ namespace SplineSculptor.IO
                 geo.KnotsV[j + 1] = rs.KnotsV[j];
             geo.KnotsV[geo.KnotsV.Length - 1] = rs.KnotsV[rs.KnotsV.Count - 1];
 
-            // Control points
+            // Control points — rhino3dm GetPoint uses an out parameter
             for (int i = 0; i < uCount; i++)
                 for (int j = 0; j < vCount; j++)
                 {
-                    var pt4 = rs.Points.GetPoint(i, j);
+                    rs.Points.GetPoint(i, j, out Rhino.Geometry.Point4d pt4);
                     double w = pt4.W;
                     geo.Weights[i, j] = w;
                     geo.ControlPoints[i, j] = w > 1e-10
@@ -261,10 +261,10 @@ namespace SplineSculptor.IO
 
         // ─── Color conversion ─────────────────────────────────────────────────────
 
-        private static Color DrawingColorToGodot(System.Drawing.Color c)
-            => new Color(c.R / 255f, c.G / 255f, c.B / 255f, c.A / 255f);
+        private static Godot.Color DrawingColorToGodot(System.Drawing.Color c)
+            => new Godot.Color(c.R / 255f, c.G / 255f, c.B / 255f, c.A / 255f);
 
-        private static System.Drawing.Color GodotColorToDrawing(Color c)
+        private static System.Drawing.Color GodotColorToDrawing(Godot.Color c)
             => System.Drawing.Color.FromArgb(
                 (int)(c.A * 255), (int)(c.R * 255), (int)(c.G * 255), (int)(c.B * 255));
     }

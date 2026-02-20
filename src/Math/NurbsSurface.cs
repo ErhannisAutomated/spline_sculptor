@@ -20,17 +20,17 @@ namespace SplineSculptor.Math
         /// Control points [u_index, v_index].
         /// Size: (DegreeU + SpanCountU) × (DegreeV + SpanCountV)
         /// </summary>
-        public Vector3[,] ControlPoints;
+        public required Vector3[,] ControlPoints;
 
         /// <summary>Homogeneous weights, same size as ControlPoints. Default 1.0.</summary>
-        public double[,] Weights;
+        public required double[,] Weights;
 
         /// <summary>
         /// Knot vectors. Clamped.
         /// Length in U: cpCountU + DegreeU + 1
         /// </summary>
-        public double[] KnotsU;
-        public double[] KnotsV;
+        public required double[] KnotsU;
+        public required double[] KnotsV;
 
         public int CpCountU => DegreeU + SpanCountU;
         public int CpCountV => DegreeV + SpanCountV;

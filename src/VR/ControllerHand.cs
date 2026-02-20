@@ -89,9 +89,7 @@ namespace SplineSculptor.VR
         {
             if (_controller == null) return;
 
-            bool gripPressed = _controller.IsButtonPressed(JoyButton.LeftShoulder);
-            // In OpenXR action map the grip is mapped; use the abstract button for now
-            // (actual binding is in the action map asset)
+            bool gripPressed = _controller.IsButtonPressed("grip");
 
             switch (_state)
             {
@@ -150,7 +148,7 @@ namespace SplineSculptor.VR
         private void CheckMenuButton()
         {
             if (_controller == null) return;
-            bool menuDown = _controller.IsButtonPressed(JoyButton.Start);
+            bool menuDown = _controller.IsButtonPressed("menu");
             if (menuDown && !_menuWasDown)
             {
                 // Undo on menu press

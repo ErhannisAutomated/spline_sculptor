@@ -61,8 +61,7 @@ namespace SplineSculptor.VR
 
         private void EnableDesktopFallback()
         {
-            var rig = GetNodeOrNull(VRRigPath);
-            rig?.Hide();
+            GetNodeOrNull<Node3D>(VRRigPath)?.Hide();
 
             var cam = GetNodeOrNull<Camera3D>(DesktopCamPath);
             if (cam == null)

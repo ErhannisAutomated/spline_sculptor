@@ -34,8 +34,8 @@ namespace SplineSculptor.VR
         {
             if (_left == null || _right == null || _world == null) return;
 
-            bool leftGrip  = _left.IsButtonPressed(JoyButton.LeftShoulder);
-            bool rightGrip = _right.IsButtonPressed(JoyButton.RightShoulder);
+            bool leftGrip  = _left.IsButtonPressed("grip");
+            bool rightGrip = _right.IsButtonPressed("grip");
             bool bothGrip  = leftGrip && rightGrip;
 
             if (bothGrip)
