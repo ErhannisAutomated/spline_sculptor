@@ -1,0 +1,26 @@
+[gd_scene load_steps=4 format=3 uid="uid://vrrig"]
+
+[ext_resource type="Script" path="res://src/VR/ControllerHand.cs" id="1_ctrlhand"]
+[ext_resource type="Script" path="res://src/VR/WorldNavigator.cs" id="2_worldnav"]
+
+[node name="VRRig" type="XROrigin3D"]
+script = ExtResource("2_worldnav")
+
+[node name="XRCamera3D" type="XRCamera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.7, 0)
+
+[node name="LeftController" type="XRController3D" parent="."]
+tracker = "left_hand"
+script = ExtResource("1_ctrlhand")
+
+[node name="LeftAimRay" type="RayCast3D" parent="LeftController"]
+target_position = Vector3(0, 0, -5)
+enabled = true
+
+[node name="RightController" type="XRController3D" parent="."]
+tracker = "right_hand"
+script = ExtResource("1_ctrlhand")
+
+[node name="RightAimRay" type="RayCast3D" parent="RightController"]
+target_position = Vector3(0, 0, -5)
+enabled = true

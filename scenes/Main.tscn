@@ -1,0 +1,25 @@
+[gd_scene load_steps=3 format=3 uid="uid://main"]
+
+[ext_resource type="Script" path="res://src/VR/VRManager.cs" id="1_vrmanager"]
+
+[node name="Main" type="Node3D"]
+script = ExtResource("1_vrmanager")
+
+[node name="VRRig" parent="." instance=ExtResource("uid://vrrig")]
+
+[node name="SceneRoot" type="Node3D" parent="."]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_default")
+
+[sub_resource type="Environment" id="Environment_default"]
+background_mode = 1
+background_color = Color(0.12, 0.12, 0.16, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.8, 0.8, 0.9, 1)
+ambient_light_energy = 0.3
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866, -0.433, 0.25, 0, 0.5, 0.866, -0.5, -0.75, 0.433, 0, 5, 0)
+light_energy = 1.2
+shadow_enabled = true

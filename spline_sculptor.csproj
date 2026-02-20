@@ -1,0 +1,15 @@
+<Project Sdk="Godot.NET.Sdk/4.3.0">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework Condition=" '$(GodotTargetPlatform)' == 'android' ">net8.0</TargetFramework>
+    <TargetFramework Condition=" '$(GodotTargetPlatform)' == 'ios' ">net8.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <RootNamespace>SplineSculptor</RootNamespace>
+    <AssemblyName>SplineSculptor</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- rhino3dm for .3dm file I/O -->
+    <PackageReference Include="rhino3dm" Version="8.9.0" />
+  </ItemGroup>
+</Project>
