@@ -2,49 +2,56 @@ using Godot;
 using SplineSculptor.Math;
 using SplineSculptor.Model;
 using SplineSculptor.Interaction;
+using SplineSculptor.Rendering;
 
 namespace SplineSculptor.VR
 {
     /// <summary>
-    /// Root manager for the scene. Handles:
-    ///   - OpenXR initialisation (or desktop fallback)
-    ///   - Creating the initial scene (default Bezier patch polysurface)
-    ///   - Undo/redo keyboard input (desktop) and menu button (VR)
+    /// Root manager. Initialises OpenXR (or desktop fallback), builds the VR rig
+    /// and initial scene entirely in code — no child scene instancing required.
+    ///
+    /// Desktop keyboard shortcuts:
+    ///   Ctrl+Z / Ctrl+Y  — undo / redo
+    ///   P                — add a new standalone Bezier patch to the scene
     /// </summary>
     [GlobalClass]
     public partial class VRManager : Node3D
     {
-        [Export] public NodePath VRRigPath       { get; set; } = "VRRig";
-        [Export] public NodePath SceneRootPath   { get; set; } = "SceneRoot";
-        [Export] public NodePath DesktopCamPath  { get; set; } = "DesktopCamera";
-
-        private SculptScene _scene = new();
+        private SculptScene _scene    = new();
         private Node3D?     _sceneRoot;
+        private DesktopInteraction? _desktop;
 
-        // Exposed so ControlPointHandle can reach the scene's undo stack
         public SculptScene Scene => _scene;
 
         public override void _Ready()
         {
-            _sceneRoot = GetNodeOrNull<Node3D>(SceneRootPath);
+            // SceneRoot is declared in Main.tscn
+            _sceneRoot = GetNodeOrNull<Node3D>("SceneRoot");
+            if (_sceneRoot == null)
+            {
+                GD.PrintErr("[VRManager] SceneRoot node not found in scene tree.");
+                return;
+            }
 
-            // Wire global scene reference for ControlPointHandles
             ControlPointHandle.SceneRef = _scene;
 
             bool vrAvailable = InitXR();
-            if (!vrAvailable)
+            if (vrAvailable)
+                BuildVRRig();
+            else
                 EnableDesktopFallback();
 
-            // Create a default polysurface with a single Bezier patch
-            BuildDefaultScene();
+            SpawnPatch("Default Patch");
         }
+
+        // ─── XR init ─────────────────────────────────────────────────────────────
 
         private bool InitXR()
         {
             var xrInterface = XRServer.FindInterface("OpenXR");
-            if (xrInterface == null || !xrInterface.IsInitialized())
+            if (xrInterface == null)
             {
-                GD.Print("[VRManager] No OpenXR interface found — using desktop mode.");
+                GD.Print("[VRManager] OpenXR interface not found — desktop mode.");
                 return false;
             }
 
@@ -55,58 +62,98 @@ namespace SplineSculptor.VR
                 return true;
             }
 
-            GD.PrintErr("[VRManager] OpenXR initialisation failed.");
+            GD.Print("[VRManager] OpenXR init failed — desktop mode.");
             return false;
         }
 
-        private void EnableDesktopFallback()
+        // ─── VR rig (created in code, no scene file needed) ──────────────────────
+
+        private void BuildVRRig()
         {
-            GetNodeOrNull<Node3D>(VRRigPath)?.Hide();
+            var origin = new XROrigin3D { Name = "XROrigin3D" };
+            AddChild(origin);
 
-            var cam = GetNodeOrNull<Camera3D>(DesktopCamPath);
-            if (cam == null)
-            {
-                cam = new Camera3D
-                {
-                    Position = new Vector3(0, 1.5f, 3f),
-                };
-                cam.LookAt(Vector3.Zero, Vector3.Up);
-                AddChild(cam);
-            }
-            cam.MakeCurrent();
+            var camera = new XRCamera3D { Name = "XRCamera3D" };
+            origin.AddChild(camera);
 
-            // Add desktop mouse interaction
-            var desktop = new DesktopInteraction();
-            desktop.Scene = _scene;
-            desktop.SceneRoot = _sceneRoot;
-            AddChild(desktop);
+            var leftCtrl = new XRController3D { Name = "LeftController", Tracker = "left_hand" };
+            origin.AddChild(leftCtrl);
+            var leftHand = new ControllerHand { Name = "LeftHand" };
+            leftCtrl.AddChild(leftHand);
+            leftHand.SetSceneRoot(_sceneRoot!);
+
+            var rightCtrl = new XRController3D { Name = "RightController", Tracker = "right_hand" };
+            origin.AddChild(rightCtrl);
+            var rightHand = new ControllerHand { Name = "RightHand" };
+            rightCtrl.AddChild(rightHand);
+            rightHand.SetSceneRoot(_sceneRoot!);
+
+            leftHand.OtherHand  = rightHand;
+            rightHand.OtherHand = leftHand;
+
+            // World navigator watches both controllers directly
+            var nav = new WorldNavigator(_sceneRoot!, leftCtrl, rightCtrl);
+            origin.AddChild(nav);
         }
 
-        private void BuildDefaultScene()
+        // ─── Desktop fallback ─────────────────────────────────────────────────────
+
+        private void EnableDesktopFallback()
+        {
+            var cam = new Camera3D
+            {
+                Name     = "DesktopCamera",
+                Position = new Vector3(0, 1.2f, 2.5f),
+            };
+            AddChild(cam);
+            cam.LookAt(Vector3.Zero, Vector3.Up);
+            cam.MakeCurrent();
+
+            _desktop = new DesktopInteraction
+            {
+                Scene     = _scene,
+                SceneRoot = _sceneRoot,
+            };
+            AddChild(_desktop);
+        }
+
+        // ─── Scene building ───────────────────────────────────────────────────────
+
+        /// <summary>Spawn a new standalone Bezier patch Polysurface and add its node to the scene.</summary>
+        private void SpawnPatch(string name)
         {
             if (_sceneRoot == null) return;
 
-            var poly = new Model.Polysurface { Name = "Default Patch" };
-            var surf = new Model.SculptSurface(Math.NurbsSurface.CreateBezierPatch());
+            var poly = new Polysurface { Name = name };
+            var surf = new SculptSurface(NurbsSurface.CreateBezierPatch());
             poly.AddSurface(surf);
             _scene.InternalAdd(poly);
 
-            var polyNode = new Rendering.PolysurfaceNode();
+            var polyNode = new PolysurfaceNode();
             _sceneRoot.AddChild(polyNode);
             polyNode.Init(poly);
+
+            // Make sure DesktopInteraction knows about the new node
+            if (_desktop != null)
+                _desktop.SceneRoot = _sceneRoot;
+
+            GD.Print($"[VRManager] Spawned patch '{name}'. Total patches: {_scene.Polysurfaces.Count}");
         }
+
+        // ─── Input ────────────────────────────────────────────────────────────────
 
         public override void _Input(InputEvent @event)
         {
-            // Desktop keyboard undo/redo
-            if (@event is InputEventKey key && key.Pressed && !key.Echo)
-            {
-                bool ctrl = key.CtrlPressed;
-                if (ctrl && key.Keycode == Key.Z && !key.ShiftPressed)
-                    _scene.UndoStack.Undo();
-                else if (ctrl && (key.Keycode == Key.Y || (key.Keycode == Key.Z && key.ShiftPressed)))
-                    _scene.UndoStack.Redo();
-            }
+            if (@event is not InputEventKey key || !key.Pressed || key.Echo) return;
+
+            bool ctrl = key.CtrlPressed;
+
+            if (ctrl && key.Keycode == Key.Z && !key.ShiftPressed)
+                _scene.UndoStack.Undo();
+            else if (ctrl && (key.Keycode == Key.Y || (key.Keycode == Key.Z && key.ShiftPressed)))
+                _scene.UndoStack.Redo();
+            else if (!ctrl && key.Keycode == Key.P)
+                SpawnPatch($"Patch {_scene.Polysurfaces.Count + 1}");
         }
     }
 }

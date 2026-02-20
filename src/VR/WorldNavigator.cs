@@ -4,31 +4,30 @@ namespace SplineSculptor.VR
 {
     /// <summary>
     /// Two-hand world pan / scale / rotate.
-    /// Attach to the XROrigin3D (or a scene-root wrapper) as a child.
+    /// Initialised with direct node references by VRManager (no NodePath exports needed).
     /// </summary>
     [GlobalClass]
     public partial class WorldNavigator : Node3D
     {
-        [Export] public NodePath LeftControllerPath  { get; set; } = "../LeftController";
-        [Export] public NodePath RightControllerPath { get; set; } = "../RightController";
-        [Export] public NodePath WorldRootPath       { get; set; } = "../../SceneRoot";
-
         private XRController3D? _left;
         private XRController3D? _right;
         private Node3D?         _world;
 
-        // State from the previous frame for delta computation
-        private bool    _wasActive = false;
+        private bool    _wasActive;
         private Vector3 _prevMidpoint;
         private float   _prevSpan;
         private float   _prevAngle;
 
-        public override void _Ready()
+        /// <summary>Called by VRManager after creating the rig.</summary>
+        public WorldNavigator(Node3D world, XRController3D left, XRController3D right)
         {
-            _left  = GetNodeOrNull<XRController3D>(LeftControllerPath);
-            _right = GetNodeOrNull<XRController3D>(RightControllerPath);
-            _world = GetNodeOrNull<Node3D>(WorldRootPath);
+            _world = world;
+            _left  = left;
+            _right = right;
         }
+
+        // Parameterless constructor required by Godot's [GlobalClass] registration.
+        public WorldNavigator() { }
 
         public override void _PhysicsProcess(double delta)
         {
@@ -36,33 +35,24 @@ namespace SplineSculptor.VR
 
             bool leftGrip  = _left.IsButtonPressed("grip");
             bool rightGrip = _right.IsButtonPressed("grip");
-            bool bothGrip  = leftGrip && rightGrip;
 
-            if (bothGrip)
+            if (leftGrip && rightGrip)
             {
-                Vector3 lPos = _left.GlobalPosition;
-                Vector3 rPos = _right.GlobalPosition;
-                Vector3 mid  = (lPos + rPos) * 0.5f;
+                Vector3 lPos  = _left.GlobalPosition;
+                Vector3 rPos  = _right.GlobalPosition;
+                Vector3 mid   = (lPos + rPos) * 0.5f;
                 float   span  = lPos.DistanceTo(rPos);
-
-                // Project to horizontal plane for rotation angle
                 Vector2 lr2d  = new Vector2(rPos.X - lPos.X, rPos.Z - lPos.Z);
                 float   angle = Mathf.Atan2(lr2d.Y, lr2d.X);
 
                 if (_wasActive)
                 {
-                    // Translation: world midpoint follows hand midpoint
-                    Vector3 translation = mid - _prevMidpoint;
-                    _world.GlobalPosition += translation;
+                    _world.GlobalPosition += mid - _prevMidpoint;
 
-                    // Scale: proportional to span change
                     float scaleRatio = _prevSpan > 0.001f ? span / _prevSpan : 1.0f;
-                    scaleRatio = Mathf.Clamp(scaleRatio, 0.5f, 2.0f);
-                    _world.Scale *= scaleRatio;
+                    _world.Scale *= Mathf.Clamp(scaleRatio, 0.5f, 2.0f);
 
-                    // Rotation around Y axis
-                    float dAngle = angle - _prevAngle;
-                    _world.RotateY(dAngle);
+                    _world.RotateY(angle - _prevAngle);
                 }
 
                 _prevMidpoint = mid;
