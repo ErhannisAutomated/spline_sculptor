@@ -161,7 +161,7 @@ namespace SplineSculptor.VR
             else if (ctrl && (key.Keycode == Key.Y || (key.Keycode == Key.Z && key.ShiftPressed)))
                 _scene.UndoStack.Redo();
             else if (!ctrl && key.Keycode == Key.P)
-                SpawnPatch($"Patch {_scene.Polysurfaces.Count + 1}");
+                AttachOrSpawn();
             else if (!ctrl && key.Keycode == Key.Key1)
                 AttachToSelected(SurfaceEdge.UMin);
             else if (!ctrl && key.Keycode == Key.Key2)
@@ -179,6 +179,22 @@ namespace SplineSculptor.VR
         }
 
         // ─── Surface operations ───────────────────────────────────────────────────
+
+        /// <summary>
+        /// If an edge is selected, attach to it. Otherwise spawn a standalone patch.
+        /// </summary>
+        private void AttachOrSpawn()
+        {
+            if (_selection.SelectedEdge.HasValue)
+            {
+                var er  = _selection.SelectedEdge.Value;
+                var cmd = new AttachPatchCommand(er.Poly, er.Surface, er.Edge);
+                _scene.UndoStack.Execute(cmd);
+                GD.Print($"[VRManager] Attached patch to {er.Edge} of '{er.Poly.Name}'.");
+            }
+            else
+                SpawnPatch($"Patch {_scene.Polysurfaces.Count + 1}");
+        }
 
         private void AttachToSelected(SurfaceEdge edge)
         {

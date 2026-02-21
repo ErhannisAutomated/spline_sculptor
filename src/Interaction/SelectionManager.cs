@@ -5,20 +5,26 @@ using SplineSculptor.Model;
 namespace SplineSculptor.Interaction
 {
     /// <summary>
-    /// Tracks which surfaces / polysurfaces are currently selected.
+    /// Tracks which surfaces, polysurfaces, and edges are currently selected.
     /// </summary>
     public class SelectionManager
     {
-        private readonly HashSet<SculptSurface>  _selectedSurfaces     = new();
-        private readonly HashSet<Polysurface>    _selectedPolysurfaces = new();
+        private readonly HashSet<SculptSurface> _selectedSurfaces     = new();
+        private readonly HashSet<Polysurface>   _selectedPolysurfaces = new();
+        private EdgeRef? _selectedEdge;
 
         public event Action<SculptSurface>? SurfaceSelected;
         public event Action<SculptSurface>? SurfaceDeselected;
         public event Action<Polysurface>?   PolysurfaceSelected;
         public event Action<Polysurface>?   PolysurfaceDeselected;
+        public event Action<EdgeRef>?       EdgeSelected;
+        public event Action?                EdgeDeselected;
 
         public IReadOnlyCollection<SculptSurface> SelectedSurfaces     => _selectedSurfaces;
         public IReadOnlyCollection<Polysurface>   SelectedPolysurfaces => _selectedPolysurfaces;
+        public EdgeRef?                           SelectedEdge         => _selectedEdge;
+
+        // ─── Surface selection ────────────────────────────────────────────────────
 
         public void SelectSurface(SculptSurface s, bool additive = false)
         {
@@ -39,6 +45,8 @@ namespace SplineSculptor.Interaction
             }
         }
 
+        // ─── Polysurface selection ────────────────────────────────────────────────
+
         public void SelectPolysurface(Polysurface p, bool additive = false)
         {
             if (!additive) ClearPolysurfaces();
@@ -52,10 +60,30 @@ namespace SplineSculptor.Interaction
                 PolysurfaceDeselected?.Invoke(p);
         }
 
+        // ─── Edge selection ───────────────────────────────────────────────────────
+
+        public void SelectEdge(EdgeRef e)
+        {
+            if (_selectedEdge.HasValue)
+                EdgeDeselected?.Invoke();
+            _selectedEdge = e;
+            EdgeSelected?.Invoke(e);
+        }
+
+        public void DeselectEdge()
+        {
+            if (!_selectedEdge.HasValue) return;
+            EdgeDeselected?.Invoke();
+            _selectedEdge = null;
+        }
+
+        // ─── Clear ────────────────────────────────────────────────────────────────
+
         public void ClearAll()
         {
             ClearSurfaces();
             ClearPolysurfaces();
+            DeselectEdge();
         }
 
         private void ClearSurfaces()

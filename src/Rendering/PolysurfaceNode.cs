@@ -59,6 +59,13 @@ namespace SplineSculptor.Rendering
             _nodes.Remove(s);
         }
 
+        /// <summary>Retrieve all SurfaceNodes in this polysurface node.</summary>
+        public IEnumerable<SurfaceNode> AllSurfaceNodes()
+        {
+            foreach (var (surf, _) in _nodes.Values)
+                yield return surf;
+        }
+
         /// <summary>Retrieve all ControlPointHandles across all surfaces in this node.</summary>
         public IEnumerable<Interaction.ControlPointHandle> AllHandles()
         {
