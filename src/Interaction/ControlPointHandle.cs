@@ -9,22 +9,26 @@ namespace SplineSculptor.Interaction
     /// Node3D attached to each control point sphere.
     /// Implements IGrabTarget so ControllerHand can drag it.
     /// On drag end, wraps the move in a MoveControlPointCommand for undo/redo.
+    ///
+    /// Group-drag API (used by DesktopInteraction for multi-select):
+    ///   StartGroupDrag / MoveGroupDrag / EndGroupDrag / TriggerConstraintEnforcement
     /// </summary>
     [GlobalClass]
     public partial class ControlPointHandle : Node3D, IGrabTarget
     {
         private SculptSurface? _surface;
-        private Polysurface? _polysurface;
+        private Polysurface?   _polysurface;
         private int _u;
         private int _v;
 
         private Vector3 _dragStartPos;
-        private bool _isDragging = false;
+        private bool    _isDragging = false;
 
         // Reference to the scene's undo stack (injected by PolysurfaceNode / Main)
         public static SculptScene? SceneRef { get; set; }
 
-        public bool IsHovered { get; set; } = false;
+        public bool IsHovered  { get; set; } = false;
+        public bool IsSelected { get; set; } = false;
 
         private MeshInstance3D? _meshInstance;
 
@@ -43,23 +47,22 @@ namespace SplineSculptor.Interaction
 
         public Vector3 GlobalGrabPosition => GlobalPosition;
 
+        // ─── VR single-handle grab API ────────────────────────────────────────────
+
         public void OnGrabStart(Node grabber)
         {
             if (_surface == null) return;
             _dragStartPos = _surface.Geometry.ControlPoints[_u, _v];
-            _isDragging = true;
+            _isDragging   = true;
             GD.Print($"[Drag] Start CP[{_u},{_v}] at {_dragStartPos:F3}");
 
-            // Switch parent PolysurfaceNode to low-res preview
-            if (GetParent()?.GetParent() is Rendering.PolysurfaceNode polyNode)
+            if (GetParent()?.GetParent() is PolysurfaceNode polyNode)
                 polyNode.BeginDrag();
         }
 
         public void OnGrabMove(Vector3 controllerWorldPos)
         {
             if (!_isDragging || _surface == null) return;
-
-            // Move to controller position, realtime (no undo yet)
             _surface.ApplyControlPointMove(_u, _v, controllerWorldPos);
             GlobalPosition = controllerWorldPos;
         }
@@ -71,50 +74,98 @@ namespace SplineSculptor.Interaction
 
             Vector3 newPos = _surface.Geometry.ControlPoints[_u, _v];
 
-            // Record undo command
             if (SceneRef != null && newPos != _dragStartPos)
             {
                 var cmd = new MoveControlPointCommand(
                     _surface, _u, _v, _dragStartPos, newPos, _polysurface);
-                // Execute without re-applying (position already moved); push directly.
                 SceneRef.UndoStack.Execute(new AlreadyAppliedCommand(cmd));
             }
 
             float moved = newPos.DistanceTo(_dragStartPos);
             GD.Print($"[Drag] End   CP[{_u},{_v}] → {newPos:F3}  (Δ={moved:F3})");
 
-            // AlreadyAppliedCommand.Execute() is a no-op on first call, so EnforceConstraints
-            // was never run for the live drag. Call it explicitly now.
             _polysurface?.EnforceConstraints(_surface);
 
-            // Switch back to high-res
-            if (GetParent()?.GetParent() is Rendering.PolysurfaceNode polyNode)
+            if (GetParent()?.GetParent() is PolysurfaceNode polyNode)
                 polyNode.EndDrag();
         }
 
+        // ─── Desktop multi-select group-drag API ──────────────────────────────────
+
+        /// <summary>Record start position and switch parent polysurface to low-res preview.</summary>
+        public void StartGroupDrag()
+        {
+            if (_surface == null) return;
+            _dragStartPos = _surface.Geometry.ControlPoints[_u, _v];
+            _isDragging   = true;
+            if (GetParent()?.GetParent() is PolysurfaceNode pn)
+                pn.BeginDrag();
+        }
+
+        /// <summary>Move this handle by delta from its drag-start position.</summary>
+        public void MoveGroupDrag(Vector3 delta)
+        {
+            if (!_isDragging || _surface == null) return;
+            var newPos = _dragStartPos + delta;
+            _surface.ApplyControlPointMove(_u, _v, newPos);
+            GlobalPosition = newPos;
+        }
+
+        /// <summary>
+        /// Finish the drag. Returns data the caller needs to build a
+        /// MultiMoveControlPointCommand. Switches back to high-res.
+        /// </summary>
+        public (SculptSurface? surf, int u, int v, Vector3 startPos, Vector3 endPos, Polysurface? poly)
+            EndGroupDrag()
+        {
+            _isDragging = false;
+            var endPos = _surface?.Geometry.ControlPoints[_u, _v] ?? _dragStartPos;
+            if (GetParent()?.GetParent() is PolysurfaceNode pn)
+                pn.EndDrag();
+            return (_surface, _u, _v, _dragStartPos, endPos, _polysurface);
+        }
+
+        /// <summary>Run constraint enforcement after a group drag completes.</summary>
+        public void TriggerConstraintEnforcement()
+        {
+            if (_surface != null)
+                _polysurface?.EnforceConstraints(_surface);
+        }
+
+        // ─── Visual state ─────────────────────────────────────────────────────────
+
         public override void _Process(double delta)
         {
-            // Visual feedback for hover state
-            if (_meshInstance != null && _meshInstance.MaterialOverride is StandardMaterial3D mat)
+            if (_meshInstance == null || _meshInstance.MaterialOverride is not StandardMaterial3D mat)
+                return;
+
+            if (IsSelected && IsHovered)
             {
-                if (IsHovered)
-                {
-                    mat.AlbedoColor = new Color(1f, 1f, 0.3f);
-                    mat.Emission    = new Color(0.8f, 0.8f, 0.1f);
-                }
-                else
-                {
-                    mat.AlbedoColor = new Color(1f, 0.8f, 0.2f);
-                    mat.Emission    = new Color(0.5f, 0.4f, 0.1f);
-                }
+                // Selected + hovered: cyan
+                mat.AlbedoColor = new Color(0.3f, 1f, 1f);
+                mat.Emission    = new Color(0.1f, 0.6f, 0.6f);
+            }
+            else if (IsSelected)
+            {
+                // Selected only: green
+                mat.AlbedoColor = new Color(0.3f, 1f, 0.4f);
+                mat.Emission    = new Color(0.1f, 0.6f, 0.2f);
+            }
+            else if (IsHovered)
+            {
+                // Hovered only: bright yellow
+                mat.AlbedoColor = new Color(1f, 1f, 0.3f);
+                mat.Emission    = new Color(0.8f, 0.8f, 0.1f);
+            }
+            else
+            {
+                // Default: orange
+                mat.AlbedoColor = new Color(1f, 0.8f, 0.2f);
+                mat.Emission    = new Color(0.5f, 0.4f, 0.1f);
             }
         }
     }
 
-    /// <summary>
-    /// Wraps a command that has already been applied so that Execute() is a no-op.
-    /// Used when a drag has already been applied interactively.
-    /// </summary>
     /// <summary>
     /// Wraps a command that has already been applied so that the initial Execute()
     /// is a no-op (the move happened interactively). Subsequent Execute() calls

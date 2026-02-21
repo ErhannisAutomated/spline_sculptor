@@ -5,24 +5,32 @@ using SplineSculptor.Model;
 namespace SplineSculptor.Interaction
 {
     /// <summary>
-    /// Tracks which surfaces, polysurfaces, and edges are currently selected.
+    /// Tracks which surfaces, polysurfaces, edges, and control-point handles are
+    /// currently selected. All mutation goes through the Modify* / Clear* methods.
     /// </summary>
     public class SelectionManager
     {
-        private readonly HashSet<SculptSurface> _selectedSurfaces     = new();
-        private readonly HashSet<Polysurface>   _selectedPolysurfaces = new();
-        private EdgeRef? _selectedEdge;
+        private readonly HashSet<SculptSurface>      _selectedSurfaces     = new();
+        private readonly HashSet<Polysurface>         _selectedPolysurfaces = new();
+        private readonly List<EdgeRef>                _selectedEdges        = new();
+        private readonly HashSet<ControlPointHandle>  _selectedHandles      = new();
 
-        public event Action<SculptSurface>? SurfaceSelected;
-        public event Action<SculptSurface>? SurfaceDeselected;
-        public event Action<Polysurface>?   PolysurfaceSelected;
-        public event Action<Polysurface>?   PolysurfaceDeselected;
-        public event Action<EdgeRef>?       EdgeSelected;
-        public event Action?                EdgeDeselected;
+        public event Action<SculptSurface>?       SurfaceSelected;
+        public event Action<SculptSurface>?       SurfaceDeselected;
+        public event Action<Polysurface>?         PolysurfaceSelected;
+        public event Action<Polysurface>?         PolysurfaceDeselected;
+        public event Action<EdgeRef>?             EdgeSelected;
+        public event Action?                      EdgeDeselected;
+        public event Action<ControlPointHandle>?  HandleSelected;
+        public event Action<ControlPointHandle>?  HandleDeselected;
 
-        public IReadOnlyCollection<SculptSurface> SelectedSurfaces     => _selectedSurfaces;
-        public IReadOnlyCollection<Polysurface>   SelectedPolysurfaces => _selectedPolysurfaces;
-        public EdgeRef?                           SelectedEdge         => _selectedEdge;
+        public IReadOnlyCollection<SculptSurface>      SelectedSurfaces     => _selectedSurfaces;
+        public IReadOnlyCollection<Polysurface>        SelectedPolysurfaces => _selectedPolysurfaces;
+        public IReadOnlyList<EdgeRef>                  SelectedEdges        => _selectedEdges;
+        public IReadOnlyCollection<ControlPointHandle> SelectedHandles      => _selectedHandles;
+
+        /// <summary>Backward-compat: first selected edge (or null).</summary>
+        public EdgeRef? SelectedEdge => _selectedEdges.Count > 0 ? _selectedEdges[0] : null;
 
         // ─── Surface selection ────────────────────────────────────────────────────
 
@@ -60,21 +68,109 @@ namespace SplineSculptor.Interaction
                 PolysurfaceDeselected?.Invoke(p);
         }
 
-        // ─── Edge selection ───────────────────────────────────────────────────────
+        // ─── Edge selection (multi) ───────────────────────────────────────────────
 
-        public void SelectEdge(EdgeRef e)
+        public void ModifyEdgeSelection(EdgeRef er, SelectionModifier mod)
         {
-            if (_selectedEdge.HasValue)
-                EdgeDeselected?.Invoke();
-            _selectedEdge = e;
-            EdgeSelected?.Invoke(e);
+            switch (mod)
+            {
+                case SelectionModifier.Replace:
+                    ClearEdges();
+                    AddEdge(er);
+                    break;
+                case SelectionModifier.Add:
+                    AddEdge(er);
+                    break;
+                case SelectionModifier.XOR:
+                    int xi = _selectedEdges.IndexOf(er);
+                    if (xi >= 0)
+                    {
+                        _selectedEdges.RemoveAt(xi);
+                        EdgeDeselected?.Invoke();
+                    }
+                    else
+                        AddEdge(er);
+                    break;
+                case SelectionModifier.Remove:
+                    int ri = _selectedEdges.IndexOf(er);
+                    if (ri >= 0)
+                    {
+                        _selectedEdges.RemoveAt(ri);
+                        EdgeDeselected?.Invoke();
+                    }
+                    break;
+            }
         }
 
-        public void DeselectEdge()
+        public void ClearEdges()
         {
-            if (!_selectedEdge.HasValue) return;
-            EdgeDeselected?.Invoke();
-            _selectedEdge = null;
+            if (_selectedEdges.Count > 0)
+            {
+                _selectedEdges.Clear();
+                EdgeDeselected?.Invoke();
+            }
+        }
+
+        private void AddEdge(EdgeRef er)
+        {
+            _selectedEdges.Add(er);
+            EdgeSelected?.Invoke(er);
+        }
+
+        // ─── Handle selection (multi) ─────────────────────────────────────────────
+
+        public void ModifyHandleSelection(ControlPointHandle h, SelectionModifier mod)
+        {
+            switch (mod)
+            {
+                case SelectionModifier.Replace:
+                    ClearHandles();
+                    AddHandle(h);
+                    break;
+                case SelectionModifier.Add:
+                    AddHandle(h);
+                    break;
+                case SelectionModifier.XOR:
+                    if (_selectedHandles.Remove(h))
+                    {
+                        h.IsSelected = false;
+                        HandleDeselected?.Invoke(h);
+                    }
+                    else
+                        AddHandle(h);
+                    break;
+                case SelectionModifier.Remove:
+                    RemoveHandle(h);
+                    break;
+            }
+        }
+
+        public void ClearHandles()
+        {
+            foreach (var h in _selectedHandles)
+            {
+                h.IsSelected = false;
+                HandleDeselected?.Invoke(h);
+            }
+            _selectedHandles.Clear();
+        }
+
+        private void AddHandle(ControlPointHandle h)
+        {
+            if (_selectedHandles.Add(h))
+            {
+                h.IsSelected = true;
+                HandleSelected?.Invoke(h);
+            }
+        }
+
+        private void RemoveHandle(ControlPointHandle h)
+        {
+            if (_selectedHandles.Remove(h))
+            {
+                h.IsSelected = false;
+                HandleDeselected?.Invoke(h);
+            }
         }
 
         // ─── Clear ────────────────────────────────────────────────────────────────
@@ -83,7 +179,8 @@ namespace SplineSculptor.Interaction
         {
             ClearSurfaces();
             ClearPolysurfaces();
-            DeselectEdge();
+            ClearEdges();
+            ClearHandles();
         }
 
         private void ClearSurfaces()

@@ -193,16 +193,20 @@ namespace SplineSculptor.VR
         // ─── Surface operations ───────────────────────────────────────────────────
 
         /// <summary>
-        /// If an edge is selected, attach to it. Otherwise spawn a standalone patch.
+        /// If one or more edges are selected, attach a patch to each.
+        /// Otherwise spawn a standalone patch.
         /// </summary>
         private void AttachOrSpawn()
         {
-            if (_selection.SelectedEdge.HasValue)
+            var edges = _selection.SelectedEdges;
+            if (edges.Count > 0)
             {
-                var er  = _selection.SelectedEdge.Value;
-                var cmd = new AttachPatchCommand(er.Poly, er.Surface, er.Edge);
-                _scene.UndoStack.Execute(cmd);
-                GD.Print($"[VRManager] Attached patch to {er.Edge} of '{er.Poly.Name}'.");
+                foreach (var er in edges)
+                {
+                    var cmd = new AttachPatchCommand(er.Poly, er.Surface, er.Edge);
+                    _scene.UndoStack.Execute(cmd);
+                    GD.Print($"[VRManager] Attached patch to {er.Edge} of '{er.Poly.Name}'.");
+                }
             }
             else
                 SpawnPatch($"Patch {_scene.Polysurfaces.Count + 1}");

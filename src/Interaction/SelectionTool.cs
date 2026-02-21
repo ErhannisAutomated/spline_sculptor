@@ -10,6 +10,12 @@ namespace SplineSculptor.Interaction
     public enum SelectionTool { Auto, Point, Edge, Surface }
 
     /// <summary>
+    /// How a click modifies the current selection.
+    /// No modifier = Replace, Shift = Add, Ctrl = XOR, Ctrl+Shift = Remove.
+    /// </summary>
+    public enum SelectionModifier { Replace, Add, XOR, Remove }
+
+    /// <summary>
     /// Identifies one boundary edge of one NURBS surface within a polysurface.
     /// </summary>
     public readonly struct EdgeRef
