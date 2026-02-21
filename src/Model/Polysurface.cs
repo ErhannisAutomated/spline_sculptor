@@ -73,11 +73,10 @@ namespace SplineSculptor.Model
                 // Tangent direction from the existing surface's inner row
                 Vector3 tangent  = boundary - inner;
 
-                newGeo.ControlPoints[nu, nv]   = boundary;               // seam row
-                newGeo.ControlPoints[nu2, nv2] = boundary + tangent;     // inner (defines G1 tangent)
-                // Distribute the two outer rows evenly so the control polygon has no kink
-                newGeo.ControlPoints[nu4, nv4] = boundary + 1.5f * tangent; // second inner
-                newGeo.ControlPoints[nu3, nv3] = boundary + 2.0f * tangent; // far edge
+                newGeo.ControlPoints[nu, nv]   = boundary;               // seam (step 0)
+                newGeo.ControlPoints[nu2, nv2] = boundary + tangent;     // inner — required for G1 (step 1)
+                newGeo.ControlPoints[nu4, nv4] = boundary + 2.0f * tangent; // second inner (step 2)
+                newGeo.ControlPoints[nu3, nv3] = boundary + 3.0f * tangent; // far edge (step 3)
             }
 
             // Add a G0 constraint between the existing surface's edge and the new surface

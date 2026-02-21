@@ -24,11 +24,11 @@ namespace SplineSculptor.VR
         private Vector3             _dragOffset;
         private SurfaceNode?        _selectedSurfaceNode;
 
-        // Orbit state
-        private bool  _orbiting   = false;
-        private float _orbitYaw   = 0;
-        private float _orbitPitch = -0.3f;
-        private float _orbitDist  = 3.0f;
+        // Orbit state — free rotation (no up-vector lock, pitch/roll unrestricted)
+        private bool    _orbiting    = false;
+        private Basis   _orbitBasis  = Basis.Identity;
+        private float   _orbitDist   = 3.0f;
+        private Vector3 _orbitTarget = Vector3.Zero;
 
         // Avoid re-triggering selection every frame the button is held
         private bool _leftWasPressed = false;
@@ -36,6 +36,12 @@ namespace SplineSculptor.VR
         public override void _Ready()
         {
             _camera = GetViewport().GetCamera3D();
+            if (_camera != null)
+            {
+                // Seed free-orbit state from the camera's current transform
+                _orbitBasis = _camera.Basis;
+                _orbitDist  = _camera.Position.Length();
+            }
         }
 
         public override void _Input(InputEvent @event)
@@ -44,23 +50,33 @@ namespace SplineSculptor.VR
             {
                 if (mb.ButtonIndex == MouseButton.Right)
                     _orbiting = mb.Pressed;
+
                 if (mb.ButtonIndex == MouseButton.WheelUp)
+                {
                     _orbitDist = Mathf.Max(0.5f, _orbitDist - 0.3f);
+                    if (_camera != null)
+                        _camera.Position = _orbitTarget + _orbitBasis.Z * _orbitDist;
+                }
                 if (mb.ButtonIndex == MouseButton.WheelDown)
+                {
                     _orbitDist += 0.3f;
+                    if (_camera != null)
+                        _camera.Position = _orbitTarget + _orbitBasis.Z * _orbitDist;
+                }
             }
 
             if (@event is InputEventMouseMotion mm && _orbiting && _camera != null)
             {
-                _orbitYaw   -= mm.Relative.X * 0.005f;
-                _orbitPitch -= mm.Relative.Y * 0.005f;
-                _orbitPitch  = Mathf.Clamp(_orbitPitch, -1.4f, 1.4f);
+                float dx = mm.Relative.X * 0.005f;
+                float dy = mm.Relative.Y * 0.005f;
 
-                float x = _orbitDist * Mathf.Cos(_orbitPitch) * Mathf.Sin(_orbitYaw);
-                float y = _orbitDist * Mathf.Sin(_orbitPitch);
-                float z = _orbitDist * Mathf.Cos(_orbitPitch) * Mathf.Cos(_orbitYaw);
-                _camera.Position = new Vector3(x, y, z);
-                _camera.LookAt(Vector3.Zero, Vector3.Up);
+                // Rotate around camera-local axes — no up-vector lock, pitch/roll unrestricted
+                _orbitBasis = _orbitBasis.Rotated(_orbitBasis.Y.Normalized(), -dx);
+                _orbitBasis = _orbitBasis.Rotated(_orbitBasis.X.Normalized(), -dy);
+                _orbitBasis = _orbitBasis.Orthonormalized();
+
+                _camera.Position = _orbitTarget + _orbitBasis.Z * _orbitDist;
+                _camera.Basis    = _orbitBasis;
             }
         }
 

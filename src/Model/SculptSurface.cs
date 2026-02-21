@@ -12,7 +12,7 @@ namespace SplineSculptor.Model
     {
         public Guid Id { get; } = Guid.NewGuid();
         public NurbsSurface Geometry { get; set; }
-        public Color SurfaceColor { get; set; } = new Color(0.4f, 0.6f, 0.9f, 1.0f);
+        public Color SurfaceColor { get; set; } = new Color(0.4f, 0.6f, 0.9f, 0.75f);
         public bool IsSelected { get; set; } = false;
 
         /// <summary>Fired after any control point position change.</summary>

@@ -35,7 +35,7 @@ namespace SplineSculptor.Rendering
                 if (_material != null)
                     _material.AlbedoColor = _isSelected
                         ? new Color(1.0f, 0.55f, 0.1f)  // orange highlight
-                        : (_surface?.SurfaceColor ?? new Color(0.4f, 0.6f, 0.9f));
+                        : (_surface?.SurfaceColor ?? new Color(0.4f, 0.6f, 0.9f, 0.75f));
             }
         }
 
@@ -57,8 +57,9 @@ namespace SplineSculptor.Rendering
 
             _material = new StandardMaterial3D
             {
-                AlbedoColor  = new Color(0.4f, 0.6f, 0.9f, 1.0f),
+                AlbedoColor  = new Color(0.4f, 0.6f, 0.9f, 0.75f),
                 CullMode     = BaseMaterial3D.CullModeEnum.Disabled,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
             };
             _meshInstance.MaterialOverride = _material;
 
@@ -123,7 +124,7 @@ namespace SplineSculptor.Rendering
             if (_material != null)
                 _material.AlbedoColor = _isSelected
                     ? new Color(1.0f, 0.55f, 0.1f)
-                    : (_surface?.SurfaceColor ?? new Color(0.4f, 0.6f, 0.9f));
+                    : (_surface?.SurfaceColor ?? new Color(0.4f, 0.6f, 0.9f, 0.75f));
 
             // Update collision shape on full-res rebuilds only
             if (_highResMode)
