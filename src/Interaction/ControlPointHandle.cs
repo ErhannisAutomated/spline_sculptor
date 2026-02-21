@@ -79,6 +79,10 @@ namespace SplineSculptor.Interaction
                 SceneRef.UndoStack.Execute(new AlreadyAppliedCommand(cmd));
             }
 
+            // AlreadyAppliedCommand.Execute() is a no-op on first call, so EnforceConstraints
+            // was never run for the live drag. Call it explicitly now.
+            _polysurface?.EnforceConstraints(_surface);
+
             // Switch back to high-res
             if (GetParent()?.GetParent() is Rendering.PolysurfaceNode polyNode)
                 polyNode.EndDrag();

@@ -61,22 +61,23 @@ namespace SplineSculptor.Model
 
             for (int k = 0; k < len; k++)
             {
-                var (eu, ev) = GetEdgeCP(exGeo, edge, k, boundary: true);
-                var (eu2, ev2) = GetEdgeCP(exGeo, edge, k, boundary: false);
-                var (nu, nv) = GetEdgeCP(newGeo, newEdge, k, boundary: true);
-                var (nu2, nv2) = GetEdgeCP(newGeo, newEdge, k, boundary: false);
-                var (nu3, nv3) = GetEdgeCP(newGeo, OppositeEdge(newEdge), k, boundary: true);
+                var (eu, ev)     = GetEdgeCP(exGeo, edge, k, boundary: true);
+                var (eu2, ev2)   = GetEdgeCP(exGeo, edge, k, boundary: false);
+                var (nu, nv)     = GetEdgeCP(newGeo, newEdge, k, boundary: true);
+                var (nu2, nv2)   = GetEdgeCP(newGeo, newEdge, k, boundary: false);
+                var (nu3, nv3)   = GetEdgeCP(newGeo, OppositeEdge(newEdge), k, boundary: true);
+                var (nu4, nv4)   = GetEdgeCP(newGeo, OppositeEdge(newEdge), k, boundary: false);
 
                 Vector3 boundary = exGeo.ControlPoints[eu, ev];
                 Vector3 inner    = exGeo.ControlPoints[eu2, ev2];
                 // Tangent direction from the existing surface's inner row
                 Vector3 tangent  = boundary - inner;
 
-                newGeo.ControlPoints[nu, nv]  = boundary;
-                newGeo.ControlPoints[nu2, nv2] = boundary + tangent;
-
-                // Far edge: project outward by 2× tangent
-                newGeo.ControlPoints[nu3, nv3] = boundary + 2.0f * tangent;
+                newGeo.ControlPoints[nu, nv]   = boundary;               // seam row
+                newGeo.ControlPoints[nu2, nv2] = boundary + tangent;     // inner (defines G1 tangent)
+                // Distribute the two outer rows evenly so the control polygon has no kink
+                newGeo.ControlPoints[nu4, nv4] = boundary + 1.5f * tangent; // second inner
+                newGeo.ControlPoints[nu3, nv3] = boundary + 2.0f * tangent; // far edge
             }
 
             // Add a G0 constraint between the existing surface's edge and the new surface
