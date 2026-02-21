@@ -347,11 +347,13 @@ namespace SplineSculptor.VR
                     Selection?.SelectSurface(surfNode.Surface);
                     if (polyNode.Data != null)
                         Selection?.SelectPolysurface(polyNode.Data);
+                    GD.Print($"[Select] Surface in '{polyNode.Data?.Name ?? "?"}'");
                     return;
                 }
             }
 
             // Clicked empty space — deselect everything
+            GD.Print("[Select] Deselected (empty click)");
             ClearEdgeSelection();
             SetSelectedSurfaceNode(null);
             Selection?.ClearAll();

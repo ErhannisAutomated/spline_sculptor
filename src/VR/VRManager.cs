@@ -1,3 +1,4 @@
+using System;
 using Godot;
 using SplineSculptor.Math;
 using SplineSculptor.Model;
@@ -156,10 +157,21 @@ namespace SplineSculptor.VR
 
             bool ctrl = key.CtrlPressed;
 
+            // Diagnostic: log every Ctrl+key event so we can confirm they reach this handler.
+            // If Ctrl+S / Ctrl+O never appear here, the editor is consuming them — use F2/F3.
+            if (ctrl)
+                GD.Print($"[VRManager] Ctrl+{key.Keycode}");
+
             if (ctrl && key.Keycode == Key.Z && !key.ShiftPressed)
+            {
+                GD.Print($"[Undo] {_scene.UndoStack.UndoDescription ?? "(nothing to undo)"}");
                 _scene.UndoStack.Undo();
+            }
             else if (ctrl && (key.Keycode == Key.Y || (key.Keycode == Key.Z && key.ShiftPressed)))
+            {
+                GD.Print($"[Redo] {_scene.UndoStack.RedoDescription ?? "(nothing to redo)"}");
                 _scene.UndoStack.Redo();
+            }
             else if (!ctrl && key.Keycode == Key.P)
                 AttachOrSpawn();
             else if (!ctrl && key.Keycode == Key.Key1)
@@ -172,9 +184,9 @@ namespace SplineSculptor.VR
                 AttachToSelected(SurfaceEdge.VMax);
             else if (!ctrl && key.Keycode == Key.Delete)
                 DeleteSelected();
-            else if (ctrl && key.Keycode == Key.S)
+            else if ((ctrl && key.Keycode == Key.S) || key.Keycode == Key.F2)
                 SaveScene();
-            else if (ctrl && key.Keycode == Key.O)
+            else if ((ctrl && key.Keycode == Key.O) || key.Keycode == Key.F3)
                 LoadScene();
         }
 
@@ -249,16 +261,36 @@ namespace SplineSculptor.VR
         {
             string path = _scene.FilePath
                 ?? ProjectSettings.GlobalizePath("user://scene.3dm");
-            Rhino3dmIO.Save(_scene, path);
-            _scene.FilePath = path;
+            GD.Print($"[Save] Saving {_scene.Polysurfaces.Count} polysurface(s) → {path}");
+            try
+            {
+                Rhino3dmIO.Save(_scene, path);
+                _scene.FilePath = path;
+                GD.Print($"[Save] Done.");
+            }
+            catch (Exception e)
+            {
+                GD.PrintErr($"[Save] FAILED: {e.GetType().Name}: {e.Message}");
+            }
         }
 
         private void LoadScene()
         {
             string path = _scene.FilePath
                 ?? ProjectSettings.GlobalizePath("user://scene.3dm");
+            GD.Print($"[Load] Loading ← {path}");
 
-            var loaded = Rhino3dmIO.Load(path);
+            SculptScene? loaded;
+            try
+            {
+                loaded = Rhino3dmIO.Load(path);
+            }
+            catch (Exception e)
+            {
+                GD.PrintErr($"[Load] FAILED: {e.GetType().Name}: {e.Message}");
+                return;
+            }
+
             if (loaded == null) return;
 
             // Remove all existing PolysurfaceNodes from the scene tree

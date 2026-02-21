@@ -48,6 +48,7 @@ namespace SplineSculptor.Interaction
             if (_surface == null) return;
             _dragStartPos = _surface.Geometry.ControlPoints[_u, _v];
             _isDragging = true;
+            GD.Print($"[Drag] Start CP[{_u},{_v}] at {_dragStartPos:F3}");
 
             // Switch parent PolysurfaceNode to low-res preview
             if (GetParent()?.GetParent() is Rendering.PolysurfaceNode polyNode)
@@ -78,6 +79,9 @@ namespace SplineSculptor.Interaction
                 // Execute without re-applying (position already moved); push directly.
                 SceneRef.UndoStack.Execute(new AlreadyAppliedCommand(cmd));
             }
+
+            float moved = newPos.DistanceTo(_dragStartPos);
+            GD.Print($"[Drag] End   CP[{_u},{_v}] → {newPos:F3}  (Δ={moved:F3})");
 
             // AlreadyAppliedCommand.Execute() is a no-op on first call, so EnforceConstraints
             // was never run for the live drag. Call it explicitly now.
