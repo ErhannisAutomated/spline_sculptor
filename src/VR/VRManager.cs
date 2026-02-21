@@ -1,8 +1,10 @@
 using Godot;
 using SplineSculptor.Math;
 using SplineSculptor.Model;
+using SplineSculptor.Model.Undo;
 using SplineSculptor.Interaction;
 using SplineSculptor.Rendering;
+using SplineSculptor.IO;
 
 namespace SplineSculptor.VR
 {
@@ -13,13 +15,18 @@ namespace SplineSculptor.VR
     /// Desktop keyboard shortcuts:
     ///   Ctrl+Z / Ctrl+Y  — undo / redo
     ///   P                — add a new standalone Bezier patch to the scene
+    ///   1 / 2 / 3 / 4   — attach patch to UMin / UMax / VMin / VMax of selected surface
+    ///   Delete           — delete the selected surface
+    ///   Ctrl+S           — save scene to .3dm
+    ///   Ctrl+O           — load scene from .3dm
     /// </summary>
     [GlobalClass]
     public partial class VRManager : Node3D
     {
-        private SculptScene _scene    = new();
-        private Node3D?     _sceneRoot;
+        private SculptScene         _scene     = new();
+        private Node3D?             _sceneRoot;
         private DesktopInteraction? _desktop;
+        private SelectionManager    _selection = new();
 
         public SculptScene Scene => _scene;
 
@@ -113,6 +120,7 @@ namespace SplineSculptor.VR
             {
                 Scene     = _scene,
                 SceneRoot = _sceneRoot,
+                Selection = _selection,
             };
             AddChild(_desktop);
         }
@@ -154,6 +162,116 @@ namespace SplineSculptor.VR
                 _scene.UndoStack.Redo();
             else if (!ctrl && key.Keycode == Key.P)
                 SpawnPatch($"Patch {_scene.Polysurfaces.Count + 1}");
+            else if (!ctrl && key.Keycode == Key.Key1)
+                AttachToSelected(SurfaceEdge.UMin);
+            else if (!ctrl && key.Keycode == Key.Key2)
+                AttachToSelected(SurfaceEdge.UMax);
+            else if (!ctrl && key.Keycode == Key.Key3)
+                AttachToSelected(SurfaceEdge.VMin);
+            else if (!ctrl && key.Keycode == Key.Key4)
+                AttachToSelected(SurfaceEdge.VMax);
+            else if (!ctrl && key.Keycode == Key.Delete)
+                DeleteSelected();
+            else if (ctrl && key.Keycode == Key.S)
+                SaveScene();
+            else if (ctrl && key.Keycode == Key.O)
+                LoadScene();
+        }
+
+        // ─── Surface operations ───────────────────────────────────────────────────
+
+        private void AttachToSelected(SurfaceEdge edge)
+        {
+            var surf = GetSelectedSurface(out var poly);
+            if (surf == null || poly == null)
+            {
+                GD.Print("[VRManager] No surface selected — click a surface first.");
+                return;
+            }
+
+            var cmd = new AttachPatchCommand(poly, surf, edge);
+            _scene.UndoStack.Execute(cmd);
+            GD.Print($"[VRManager] Attached patch to {edge} of '{poly.Name}'.");
+        }
+
+        private void DeleteSelected()
+        {
+            var surf = GetSelectedSurface(out var poly);
+            if (surf == null || poly == null)
+            {
+                GD.Print("[VRManager] No surface selected.");
+                return;
+            }
+
+            _selection.ClearAll();
+            var cmd = new DeleteSurfaceCommand(poly, surf);
+            _scene.UndoStack.Execute(cmd);
+            GD.Print($"[VRManager] Deleted surface from '{poly.Name}'.");
+        }
+
+        private SculptSurface? GetSelectedSurface(out Polysurface? poly)
+        {
+            poly = null;
+            SculptSurface? surf = null;
+            foreach (var s in _selection.SelectedSurfaces) { surf = s; break; }
+            if (surf == null) return null;
+
+            foreach (var p in _scene.Polysurfaces)
+            {
+                if (p.Surfaces.Contains(surf))
+                {
+                    poly = p;
+                    return surf;
+                }
+            }
+            return null;
+        }
+
+        // ─── Save / Load ──────────────────────────────────────────────────────────
+
+        private void SaveScene()
+        {
+            string path = _scene.FilePath
+                ?? ProjectSettings.GlobalizePath("user://scene.3dm");
+            Rhino3dmIO.Save(_scene, path);
+            _scene.FilePath = path;
+        }
+
+        private void LoadScene()
+        {
+            string path = _scene.FilePath
+                ?? ProjectSettings.GlobalizePath("user://scene.3dm");
+
+            var loaded = Rhino3dmIO.Load(path);
+            if (loaded == null) return;
+
+            // Remove all existing PolysurfaceNodes from the scene tree
+            if (_sceneRoot != null)
+            {
+                foreach (var child in _sceneRoot.GetChildren())
+                    child.QueueFree();
+            }
+
+            _scene = loaded;
+            ControlPointHandle.SceneRef = _scene;
+            _selection.ClearAll();
+
+            if (_desktop != null)
+            {
+                _desktop.Scene     = _scene;
+                _desktop.SceneRoot = _sceneRoot;
+                _desktop.Selection = _selection;
+            }
+
+            // Rebuild Godot nodes for every polysurface in the loaded scene
+            foreach (var poly in _scene.Polysurfaces)
+            {
+                var polyNode = new PolysurfaceNode();
+                _sceneRoot!.AddChild(polyNode);
+                polyNode.Init(poly);
+            }
+
+            GD.Print("[VRManager] Scene loaded and nodes rebuilt.");
         }
     }
 }

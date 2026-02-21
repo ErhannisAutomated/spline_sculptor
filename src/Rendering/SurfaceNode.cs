@@ -5,26 +5,42 @@ namespace SplineSculptor.Rendering
 {
     /// <summary>
     /// Node3D that owns an ArrayMesh representing one SculptSurface.
-    /// Rebuilds the mesh whenever the underlying geometry changes.
+    /// Also owns a StaticBody3D with a ConcavePolygonShape3D so desktop
+    /// raycasts can select the surface.
     /// </summary>
     [GlobalClass]
     public partial class SurfaceNode : Node3D
     {
-        /// <summary>Tessellation resolution. Higher = smoother but more vertices.</summary>
         [Export] public int SamplesU { get; set; } = 16;
         [Export] public int SamplesV { get; set; } = 16;
 
         private SculptSurface? _surface;
-        private MeshInstance3D? _meshInstance;
-        private StandardMaterial3D? _material;
+        private MeshInstance3D?        _meshInstance;
+        private StandardMaterial3D?   _material;
+        private StaticBody3D?          _collisionBody;
+        private ConcavePolygonShape3D? _collisionShape;
 
-        // If true, defer tessellation to the next frame (used during drag).
         private bool _rebuildPending = false;
         private bool _highResMode    = true;
+        private bool _isSelected     = false;
+
+        public SculptSurface? Surface => _surface;
+
+        public bool IsSelected
+        {
+            get => _isSelected;
+            set
+            {
+                _isSelected = value;
+                if (_material != null)
+                    _material.AlbedoColor = _isSelected
+                        ? new Color(1.0f, 0.55f, 0.1f)  // orange highlight
+                        : (_surface?.SurfaceColor ?? new Color(0.4f, 0.6f, 0.9f));
+            }
+        }
 
         public void Init(SculptSurface surface)
         {
-            // Unsubscribe from previous surface
             if (_surface != null)
                 _surface.GeometryChanged -= OnGeometryChanged;
 
@@ -41,11 +57,14 @@ namespace SplineSculptor.Rendering
 
             _material = new StandardMaterial3D
             {
-                AlbedoColor       = new Color(0.4f, 0.6f, 0.9f, 1.0f),
-                CullMode          = BaseMaterial3D.CullModeEnum.Disabled,
-                RoughnessTexture  = null,
+                AlbedoColor  = new Color(0.4f, 0.6f, 0.9f, 1.0f),
+                CullMode     = BaseMaterial3D.CullModeEnum.Disabled,
             };
             _meshInstance.MaterialOverride = _material;
+
+            // Collision body for selection raycasting
+            _collisionBody = new StaticBody3D();
+            AddChild(_collisionBody);
         }
 
         public override void _Process(double delta)
@@ -57,16 +76,14 @@ namespace SplineSculptor.Rendering
             }
         }
 
-        // ─── Low-res preview during drag, full rebuild on release ─────────────────
+        // ─── Drag mode ────────────────────────────────────────────────────────────
 
-        /// <summary>Call when a drag starts to switch to low-res tessellation.</summary>
         public void BeginDrag()
         {
             _highResMode = false;
             RebuildMesh();
         }
 
-        /// <summary>Call when a drag ends to switch back to high-res tessellation.</summary>
         public void EndDrag()
         {
             _highResMode = true;
@@ -78,8 +95,10 @@ namespace SplineSculptor.Rendering
             if (_highResMode)
                 _rebuildPending = true;
             else
-                RebuildMesh(); // low-res stays realtime during drag
+                RebuildMesh();
         }
+
+        // ─── Mesh rebuild ─────────────────────────────────────────────────────────
 
         private void RebuildMesh()
         {
@@ -101,9 +120,33 @@ namespace SplineSculptor.Rendering
             mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
             _meshInstance.Mesh = mesh;
 
-            // Update material color from model
             if (_material != null)
-                _material.AlbedoColor = _surface.SurfaceColor;
+                _material.AlbedoColor = _isSelected
+                    ? new Color(1.0f, 0.55f, 0.1f)
+                    : (_surface?.SurfaceColor ?? new Color(0.4f, 0.6f, 0.9f));
+
+            // Update collision shape on full-res rebuilds only
+            if (_highResMode)
+                UpdateCollisionShape(verts, indices);
+        }
+
+        private void UpdateCollisionShape(Vector3[] verts, int[] indices)
+        {
+            if (_collisionBody == null) return;
+
+            // ConcavePolygonShape3D expects a flat array of triangle vertices (3 per tri)
+            var faces = new Vector3[indices.Length];
+            for (int i = 0; i < indices.Length; i++)
+                faces[i] = verts[indices[i]];
+
+            if (_collisionShape == null)
+            {
+                _collisionShape = new ConcavePolygonShape3D();
+                var colShape = new CollisionShape3D { Shape = _collisionShape };
+                _collisionBody.AddChild(colShape);
+            }
+
+            _collisionShape.SetFaces(faces);
         }
     }
 }
