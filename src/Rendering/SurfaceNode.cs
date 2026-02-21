@@ -142,7 +142,7 @@ namespace SplineSculptor.Rendering
 
             if (_collisionShape == null)
             {
-                _collisionShape = new ConcavePolygonShape3D();
+                _collisionShape = new ConcavePolygonShape3D { BackfaceCollision = true };
                 var colShape = new CollisionShape3D { Shape = _collisionShape };
                 _collisionBody.AddChild(colShape);
             }
