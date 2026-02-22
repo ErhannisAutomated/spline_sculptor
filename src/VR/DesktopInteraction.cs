@@ -13,7 +13,7 @@ namespace SplineSculptor.VR
     ///
     /// Tool switching:  Q=Auto  W=Point  E=Edge  R=Surface
     ///
-    /// Selection modifiers:
+    /// Selection modifiers (click or lasso):
     ///   (none)     = Replace    Shift      = Add
     ///   Ctrl       = XOR        Ctrl+Shift = Remove
     ///
@@ -22,6 +22,10 @@ namespace SplineSculptor.VR
     ///   Middle-drag   = scale around CoM  (200 px right = 2×)
     ///   Right-drag    = rotate around first-click surface point
     ///   Right-drag (nothing selected) = orbit camera
+    ///
+    /// Lasso selection:
+    ///   Modifier + left-drag on surface/empty = freehand lasso
+    ///   Tool determines what gets selected (Auto/Point→handles, Edge→edges, Surface→surfaces)
     ///
     /// Double-click on surface = move orbit pivot to hit point.
     /// </summary>
@@ -57,7 +61,8 @@ namespace SplineSculptor.VR
             Idle,
             Threshold,         // any button: waiting to exceed pixel threshold
             DraggingHandles,   // left-drag: translate selected handles
-            EmptyDrag,         // left-drag on empty space: suppress click on release
+            EmptyDrag,         // left-drag on empty space (no modifier): suppress click
+            Lasso,             // left-drag on surface/empty (with modifier): freehand select
             ScalingHandles,    // middle-drag: scale selected handles around CoM
             RotatingHandles,   // right-drag (with selection): rotate selected handles
         }
@@ -80,8 +85,37 @@ namespace SplineSculptor.VR
         private Vector3 _scaleCoM;       // scale: pivot = center of mass
         private Vector3 _rotatePivot;    // rotate: pivot = surface hit point
 
+        // Lasso
+        private readonly List<Vector2> _lassoPath = new();
+        private LassoOverlay?          _lassoOverlay;
+
+        /// <summary>
+        /// When true, elements occluded by other geometry are excluded from lasso selection.
+        /// Requires a per-element physics raycast — leave false until implemented.
+        /// </summary>
+        private bool _lassoOcclusionCheck = false;
+
         private static readonly SurfaceEdge[] AllEdges =
             { SurfaceEdge.UMin, SurfaceEdge.UMax, SurfaceEdge.VMin, SurfaceEdge.VMax };
+
+        // ─── Lasso overlay (2D screen-space drawing) ──────────────────────────────
+
+        private sealed partial class LassoOverlay : Control
+        {
+            public readonly List<Vector2> Path = new();
+
+            public override void _Draw()
+            {
+                if (Path.Count < 2) return;
+                var col = new Color(1f, 1f, 1f, 0.85f);
+                for (int i = 0; i < Path.Count - 1; i++)
+                    DrawLine(Path[i], Path[i + 1], col, 1.5f);
+                // Closing segment (dimmer)
+                DrawLine(Path[^1], Path[0], col * new Color(1f, 1f, 1f, 0.5f), 1.5f);
+            }
+        }
+
+        // ─── Lifecycle ────────────────────────────────────────────────────────────
 
         public override void _Ready()
         {
@@ -91,6 +125,15 @@ namespace SplineSculptor.VR
                 _orbitBasis = _camera.Basis;
                 _orbitDist  = _camera.Position.Length();
             }
+
+            // Build lasso overlay: CanvasLayer on top → full-rect Control that draws the path
+            var canvas = new CanvasLayer { Layer = 100 };
+            AddChild(canvas);
+            _lassoOverlay = new LassoOverlay();
+            _lassoOverlay.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+            _lassoOverlay.MouseFilter = Control.MouseFilterEnum.Ignore;
+            _lassoOverlay.Visible     = false;
+            canvas.AddChild(_lassoOverlay);
         }
 
         public override void _Input(InputEvent @event)
@@ -144,8 +187,17 @@ namespace SplineSculptor.VR
                 }
                 if (mb.ButtonIndex == MouseButton.Left && !mb.Pressed)
                 {
-                    if (_dragState == DragState.Threshold)       { HandleClick(); _dragState = DragState.Idle; }
-                    else if (_dragState == DragState.DraggingHandles) FinalizeDrag(); // sets Idle
+                    if (_dragState == DragState.Threshold)
+                    {
+                        HandleClick();
+                        _dragState = DragState.Idle;
+                    }
+                    else if (_dragState == DragState.DraggingHandles) FinalizeDrag();  // sets Idle
+                    else if (_dragState == DragState.Lasso)
+                    {
+                        FinalizeLasso();
+                        _dragState = DragState.Idle;
+                    }
                     else _dragState = DragState.Idle; // EmptyDrag or other
                     return;
                 }
@@ -212,6 +264,7 @@ namespace SplineSculptor.VR
                     _camera.Basis    = _orbitBasis;
                 }
 
+                // Threshold exceeded → start appropriate drag type
                 if (_dragState == DragState.Threshold &&
                     (mm.Position - _mouseDownPos).Length() >= DragPixelThresh)
                 {
@@ -220,6 +273,19 @@ namespace SplineSculptor.VR
                         case MouseButton.Left:   TryStartDrag();   break;
                         case MouseButton.Middle: TryStartScale();  break;
                         case MouseButton.Right:  TryStartRotate(); break;
+                    }
+                }
+
+                // Accumulate lasso path
+                if (_dragState == DragState.Lasso)
+                {
+                    // Decimate: only add if moved ≥ 4 px since last point
+                    if (_lassoPath.Count == 0 ||
+                        (_lassoPath[^1] - mm.Position).LengthSquared() >= 16f)
+                    {
+                        _lassoPath.Add(mm.Position);
+                        _lassoOverlay?.Path.Add(mm.Position);
+                        _lassoOverlay?.QueueRedraw();
                     }
                 }
             }
@@ -248,7 +314,6 @@ namespace SplineSculptor.VR
                         return;
 
                     case DragState.ScalingHandles:
-                        // Exponential: 200 px right = ×2, 200 px left = ×0.5
                         float scaleFactor = Mathf.Pow(2f,
                             (mousePos.X - _mouseDownPos.X) / 200f);
                         foreach (var h in _multiDragHandles)
@@ -256,7 +321,6 @@ namespace SplineSculptor.VR
                         return;
 
                     case DragState.RotatingHandles:
-                        // Horizontal = yaw around camera up, vertical = pitch around camera right
                         float rdx = (mousePos.X - _mouseDownPos.X) * 0.01f;
                         float rdy = (mousePos.Y - _mouseDownPos.Y) * 0.01f;
                         var rotY  = new Quaternion(_camera.Basis.Y.Normalized(), -rdx);
@@ -267,7 +331,8 @@ namespace SplineSculptor.VR
                 }
             }
 
-            if (_dragState == DragState.EmptyDrag) return;
+            // Lasso and empty drag also skip hover
+            if (_dragState is DragState.EmptyDrag or DragState.Lasso) return;
 
             // ── Hover detection ───────────────────────────────────────────────────
 
@@ -358,7 +423,7 @@ namespace SplineSculptor.VR
             {
                 TrySelectSurface(rayOrigin, rayDir);
             }
-            // modifier key + click on empty space → don't touch selection
+            // modifier + click on empty space → leave selection unchanged
         }
 
         // ─── Translate drag (left) ────────────────────────────────────────────────
@@ -367,7 +432,11 @@ namespace SplineSculptor.VR
         {
             if (_camera == null || _clickTargetHandle == null)
             {
-                _dragState = DragState.EmptyDrag; // suppress click-on-release
+                // No handle under cursor: lasso (with modifier) or do nothing
+                if (_clickModifier != SelectionModifier.Replace)
+                    StartLasso();
+                else
+                    _dragState = DragState.EmptyDrag;
                 return;
             }
 
@@ -424,7 +493,6 @@ namespace SplineSculptor.VR
                 return;
             }
 
-            // Pivot: surface hit under right-button-down position, fallback to CoM
             _rotatePivot = GetPivotFromRaycast(_mouseDownPos);
 
             _multiDragHandles.Clear();
@@ -461,6 +529,238 @@ namespace SplineSculptor.VR
             _dragState = DragState.Idle;
         }
 
+        // ─── Lasso selection ──────────────────────────────────────────────────────
+
+        private void StartLasso()
+        {
+            _lassoPath.Clear();
+            _lassoPath.Add(_mouseDownPos);
+            if (_lassoOverlay != null)
+            {
+                _lassoOverlay.Path.Clear();
+                _lassoOverlay.Path.Add(_mouseDownPos);
+                _lassoOverlay.Visible = true;
+                _lassoOverlay.QueueRedraw();
+            }
+            _dragState = DragState.Lasso;
+        }
+
+        private void FinalizeLasso()
+        {
+            if (_lassoOverlay != null)
+            {
+                _lassoOverlay.Visible = false;
+                _lassoOverlay.Path.Clear();
+                _lassoOverlay.QueueRedraw();
+            }
+
+            if (_camera == null || _lassoPath.Count < 3 || SceneRoot == null)
+            {
+                _lassoPath.Clear();
+                return;
+            }
+
+            var mod = _clickModifier;
+
+            bool wantHandles  = _currentTool is SelectionTool.Auto or SelectionTool.Point;
+            bool wantEdges    = _currentTool == SelectionTool.Edge;
+            bool wantSurfaces = _currentTool == SelectionTool.Surface;
+
+            if (wantHandles)
+            {
+                var matched = CollectLassoHandles();
+                if (mod == SelectionModifier.Replace)
+                {
+                    Selection?.ClearHandles();
+                    foreach (var h in matched)
+                        Selection?.ModifyHandleSelection(h, SelectionModifier.Add);
+                }
+                else
+                {
+                    foreach (var h in matched)
+                        Selection?.ModifyHandleSelection(h, mod);
+                }
+            }
+            else if (wantEdges)
+            {
+                var matched = CollectLassoEdges();
+                if (mod == SelectionModifier.Replace)
+                {
+                    ClearEdgeSelection();
+                    foreach (var (node, edge, er) in matched)
+                    {
+                        node.SetSelectedEdge(edge);
+                        _selectedEdgeNodes.Add((node, edge));
+                        Selection?.ModifyEdgeSelection(er, SelectionModifier.Add);
+                    }
+                }
+                else
+                {
+                    foreach (var (node, edge, er) in matched)
+                        ApplyEdgeSelectionMod(node, edge, er, mod);
+                }
+            }
+            else if (wantSurfaces)
+            {
+                var matched = CollectLassoSurfaces();
+                if (mod == SelectionModifier.Replace)
+                {
+                    // Clear visual state for all surface nodes
+                    foreach (var child in SceneRoot.GetChildren())
+                    {
+                        if (child is not PolysurfaceNode pn) continue;
+                        foreach (var sn in pn.AllSurfaceNodes()) sn.IsSelected = false;
+                    }
+                    _selectedSurfaceNode = null;
+                    Selection?.ClearSurfaces();
+                    foreach (var (sn, surf) in matched)
+                    {
+                        sn.IsSelected      = true;
+                        _selectedSurfaceNode = sn; // last wins for single-track visual
+                        Selection?.SelectSurface(surf, additive: true);
+                    }
+                }
+                else
+                {
+                    foreach (var (sn, surf) in matched)
+                    {
+                        if (mod == SelectionModifier.Add)
+                        {
+                            sn.IsSelected = true;
+                            _selectedSurfaceNode = sn;
+                            Selection?.SelectSurface(surf, additive: true);
+                        }
+                        else if (mod == SelectionModifier.XOR)
+                        {
+                            if (surf.IsSelected)
+                            {
+                                sn.IsSelected = false;
+                                if (_selectedSurfaceNode == sn) _selectedSurfaceNode = null;
+                                Selection?.DeselectSurface(surf);
+                            }
+                            else
+                            {
+                                sn.IsSelected        = true;
+                                _selectedSurfaceNode = sn;
+                                Selection?.SelectSurface(surf, additive: true);
+                            }
+                        }
+                        else if (mod == SelectionModifier.Remove)
+                        {
+                            sn.IsSelected = false;
+                            if (_selectedSurfaceNode == sn) _selectedSurfaceNode = null;
+                            Selection?.DeselectSurface(surf);
+                        }
+                    }
+                }
+            }
+
+            _lassoPath.Clear();
+        }
+
+        // ─── Lasso collection helpers ─────────────────────────────────────────────
+
+        private List<ControlPointHandle> CollectLassoHandles()
+        {
+            var result = new List<ControlPointHandle>();
+            foreach (var child in SceneRoot!.GetChildren())
+            {
+                if (child is not PolysurfaceNode polyNode) continue;
+                foreach (var handle in polyNode.AllHandles())
+                {
+                    if (!_camera!.IsPositionInFrustum(handle.GlobalPosition)) continue;
+
+                    // _lassoOcclusionCheck: TODO — add physics raycast visibility check here
+                    // if (_lassoOcclusionCheck) { ... }
+
+                    var screenPos = _camera.UnprojectPosition(handle.GlobalPosition);
+                    if (IsPointInPolygon(screenPos, _lassoPath))
+                        result.Add(handle);
+                }
+            }
+            return result;
+        }
+
+        private List<(SurfaceNode node, SurfaceEdge edge, EdgeRef er)> CollectLassoEdges()
+        {
+            var result = new List<(SurfaceNode, SurfaceEdge, EdgeRef)>();
+            foreach (var child in SceneRoot!.GetChildren())
+            {
+                if (child is not PolysurfaceNode polyNode) continue;
+                if (polyNode.Data == null) continue;
+                foreach (var surfNode in polyNode.AllSurfaceNodes())
+                {
+                    if (surfNode.Surface == null) continue;
+                    foreach (var edge in AllEdges)
+                    {
+                        int count     = surfNode.GetEdgePointCount(edge);
+                        bool anyInside = false;
+                        for (int i = 0; i < count; i++)
+                        {
+                            var worldPt = surfNode.GetEdgeWorldPoint(edge, i);
+                            if (!_camera!.IsPositionInFrustum(worldPt)) continue;
+                            if (IsPointInPolygon(_camera.UnprojectPosition(worldPt), _lassoPath))
+                            {
+                                anyInside = true;
+                                break;
+                            }
+                        }
+                        if (anyInside)
+                            result.Add((surfNode, edge,
+                                new EdgeRef(surfNode.Surface, polyNode.Data, edge)));
+                    }
+                }
+            }
+            return result;
+        }
+
+        private List<(SurfaceNode node, SculptSurface surf)> CollectLassoSurfaces()
+        {
+            var result = new List<(SurfaceNode, SculptSurface)>();
+            foreach (var child in SceneRoot!.GetChildren())
+            {
+                if (child is not PolysurfaceNode polyNode) continue;
+                foreach (var surfNode in polyNode.AllSurfaceNodes())
+                {
+                    if (surfNode.Surface == null) continue;
+
+                    // Represent the surface by the centroid of its control point grid
+                    var geo      = surfNode.Surface.Geometry;
+                    var centroid = Vector3.Zero;
+                    int total    = 0;
+                    for (int u = 0; u < geo.ControlPoints.GetLength(0); u++)
+                        for (int v = 0; v < geo.ControlPoints.GetLength(1); v++)
+                        {
+                            centroid += geo.ControlPoints[u, v];
+                            total++;
+                        }
+                    if (total == 0) continue;
+                    centroid /= total;
+
+                    if (!_camera!.IsPositionInFrustum(centroid)) continue;
+                    if (IsPointInPolygon(_camera.UnprojectPosition(centroid), _lassoPath))
+                        result.Add((surfNode, surfNode.Surface));
+                }
+            }
+            return result;
+        }
+
+        /// <summary>Standard ray-casting point-in-polygon test (2D screen space).</summary>
+        private static bool IsPointInPolygon(Vector2 point, List<Vector2> polygon)
+        {
+            int  count  = polygon.Count;
+            bool inside = false;
+            for (int i = 0, j = count - 1; i < count; j = i++)
+            {
+                var pi = polygon[i];
+                var pj = polygon[j];
+                if ((pi.Y > point.Y) != (pj.Y > point.Y) &&
+                    point.X < (pj.X - pi.X) * (point.Y - pi.Y) / (pj.Y - pi.Y) + pi.X)
+                    inside = !inside;
+            }
+            return inside;
+        }
+
         // ─── Double-click: move orbit pivot ───────────────────────────────────────
 
         private void HandleDoubleClick(Vector2 clickPos)
@@ -488,10 +788,6 @@ namespace SplineSculptor.VR
 
         // ─── Pivot helpers ────────────────────────────────────────────────────────
 
-        /// <summary>
-        /// Raycast at screenPos and return the surface hit world position.
-        /// Falls back to the CoM of selected handles if nothing is hit.
-        /// </summary>
         private Vector3 GetPivotFromRaycast(Vector2 screenPos)
         {
             if (_camera == null) return GetSelectionCoM();

@@ -183,7 +183,28 @@ namespace SplineSculptor.Interaction
             ClearHandles();
         }
 
-        private void ClearSurfaces()
+        public void ModifySurfaceSelection(SculptSurface s, SelectionModifier mod)
+        {
+            switch (mod)
+            {
+                case SelectionModifier.Replace:
+                    ClearSurfaces();
+                    SelectSurface(s, additive: true);
+                    break;
+                case SelectionModifier.Add:
+                    SelectSurface(s, additive: true);
+                    break;
+                case SelectionModifier.XOR:
+                    if (_selectedSurfaces.Contains(s)) DeselectSurface(s);
+                    else SelectSurface(s, additive: true);
+                    break;
+                case SelectionModifier.Remove:
+                    DeselectSurface(s);
+                    break;
+            }
+        }
+
+        public void ClearSurfaces()
         {
             foreach (var s in _selectedSurfaces)
             {

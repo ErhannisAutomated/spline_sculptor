@@ -17,6 +17,7 @@ namespace SplineSculptor.VR
     ///   Ctrl+Z / Ctrl+Y  — undo / redo
     ///   P                — add a new standalone Bezier patch to the scene
     ///   1 / 2 / 3 / 4   — attach patch to UMin / UMax / VMin / VMax of selected surface
+    ///   G                — toggle G0/G1 continuity on selected edge(s)
     ///   Delete           — delete the selected surface
     ///   Ctrl+S           — save scene to .3dm
     ///   Ctrl+O           — load scene from .3dm
@@ -182,6 +183,8 @@ namespace SplineSculptor.VR
                 AttachToSelected(SurfaceEdge.VMin);
             else if (!ctrl && key.Keycode == Key.Key4)
                 AttachToSelected(SurfaceEdge.VMax);
+            else if (!ctrl && key.Keycode == Key.G)
+                ToggleEdgeConstraint();
             else if (!ctrl && key.Keycode == Key.Delete)
                 DeleteSelected();
             else if ((ctrl && key.Keycode == Key.S) || key.Keycode == Key.F2)
@@ -224,6 +227,42 @@ namespace SplineSculptor.VR
             var cmd = new AttachPatchCommand(poly, surf, edge);
             _scene.UndoStack.Execute(cmd);
             GD.Print($"[VRManager] Attached patch to {edge} of '{poly.Name}'.");
+        }
+
+        private void ToggleEdgeConstraint()
+        {
+            var edges = _selection.SelectedEdges;
+            if (edges.Count == 0)
+            {
+                GD.Print("[VRManager] No edge selected — select an edge first.");
+                return;
+            }
+
+            foreach (var er in edges)
+            {
+                // Find the constraint that links this surface+edge pair
+                EdgeConstraint? found = null;
+                foreach (var c in er.Poly.Constraints)
+                {
+                    if ((c.SurfaceA == er.Surface && c.EdgeA == er.Edge) ||
+                        (c.SurfaceB == er.Surface && c.EdgeB == er.Edge))
+                    {
+                        found = c;
+                        break;
+                    }
+                }
+
+                if (found == null)
+                {
+                    GD.Print($"[VRManager] No constraint on this edge — attach a patch first.");
+                    continue;
+                }
+
+                var newType = found.Type == Continuity.G0 ? Continuity.G1 : Continuity.G0;
+                var cmd = new SetConstraintTypeCommand(er.Poly, found, newType);
+                _scene.UndoStack.Execute(cmd);
+                GD.Print($"[VRManager] Edge constraint → {newType}");
+            }
         }
 
         private void DeleteSelected()
