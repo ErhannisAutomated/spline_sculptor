@@ -111,6 +111,24 @@ namespace SplineSculptor.Interaction
             GlobalPosition = newPos;
         }
 
+        /// <summary>Scale this handle from pivot by scaleFactor relative to drag-start position.</summary>
+        public void ScaleGroupDrag(Vector3 pivot, float scaleFactor)
+        {
+            if (!_isDragging || _surface == null) return;
+            var newPos = pivot + (_dragStartPos - pivot) * scaleFactor;
+            _surface.ApplyControlPointMove(_u, _v, newPos);
+            GlobalPosition = newPos;
+        }
+
+        /// <summary>Rotate this handle around pivot by rotation relative to drag-start position.</summary>
+        public void RotateGroupDrag(Vector3 pivot, Quaternion rotation)
+        {
+            if (!_isDragging || _surface == null) return;
+            var newPos = pivot + new Basis(rotation) * (_dragStartPos - pivot);
+            _surface.ApplyControlPointMove(_u, _v, newPos);
+            GlobalPosition = newPos;
+        }
+
         /// <summary>
         /// Finish the drag. Returns data the caller needs to build a
         /// MultiMoveControlPointCommand. Switches back to high-res.

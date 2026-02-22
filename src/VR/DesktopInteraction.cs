@@ -9,21 +9,21 @@ namespace SplineSculptor.VR
 {
     /// <summary>
     /// Desktop fallback interaction: mouse-ray hover/drag of control point handles,
-    /// surface and edge selection, right-click orbit camera.
+    /// surface and edge selection, orbit camera.
     ///
-    /// Tool switching (keyboard):
-    ///   Q = Auto   (point > edge > surface priority)
-    ///   W = Point  (only control points)
-    ///   E = Edge   (only surface boundary edges)
-    ///   R = Surface (only surfaces)
+    /// Tool switching:  Q=Auto  W=Point  E=Edge  R=Surface
     ///
     /// Selection modifiers:
-    ///   (none)       = Replace
-    ///   Shift        = Add
-    ///   Ctrl         = XOR (toggle)
-    ///   Ctrl+Shift   = Remove
+    ///   (none)     = Replace    Shift      = Add
+    ///   Ctrl       = XOR        Ctrl+Shift = Remove
     ///
-    /// Double-click on a surface moves the orbit pivot to the hit point.
+    /// Transforms (handles must be selected):
+    ///   Left-drag     = translate
+    ///   Middle-drag   = scale around CoM  (200 px right = 2×)
+    ///   Right-drag    = rotate around first-click surface point
+    ///   Right-drag (nothing selected) = orbit camera
+    ///
+    /// Double-click on surface = move orbit pivot to hit point.
     /// </summary>
     [GlobalClass]
     public partial class DesktopInteraction : Node
@@ -35,20 +35,16 @@ namespace SplineSculptor.VR
         private Camera3D?           _camera;
         private ControlPointHandle? _hoveredHandle;
 
-        // Surface selection tracking
+        // Surface / edge tracking
         private SurfaceNode? _selectedSurfaceNode;
-
-        // Edge hover tracking
         private SurfaceNode? _edgeHoverSurfNode;
         private SurfaceEdge  _edgeHoverEdge;
-
-        // Edge selection visual state (mirrors SelectionManager.SelectedEdges)
         private readonly List<(SurfaceNode node, SurfaceEdge edge)> _selectedEdgeNodes = new();
 
         // Tool state
         private SelectionTool _currentTool = SelectionTool.Auto;
 
-        // Orbit state — free rotation (no up-vector lock)
+        // Orbit
         private bool    _orbiting    = false;
         private Basis   _orbitBasis  = Basis.Identity;
         private float   _orbitDist   = 3.0f;
@@ -56,22 +52,33 @@ namespace SplineSculptor.VR
 
         // ─── Click / drag state machine ───────────────────────────────────────────
 
-        private enum DragState { Idle, Threshold, DraggingHandles }
+        private enum DragState
+        {
+            Idle,
+            Threshold,         // any button: waiting to exceed pixel threshold
+            DraggingHandles,   // left-drag: translate selected handles
+            EmptyDrag,         // left-drag on empty space: suppress click on release
+            ScalingHandles,    // middle-drag: scale selected handles around CoM
+            RotatingHandles,   // right-drag (with selection): rotate selected handles
+        }
 
-        private DragState         _dragState      = DragState.Idle;
-        private Vector2           _mouseDownPos;
+        private DragState    _dragState      = DragState.Idle;
+        private MouseButton  _thresholdButton = MouseButton.Left;
+        private Vector2      _mouseDownPos;
         private SelectionModifier _clickModifier;
-        private const float       DragPixelThresh = 6f;
+        private const float  DragPixelThresh = 6f;
 
-        // Snapshot of what was under the cursor when left button went down
+        // Snapshot of what was under cursor at left-button-down
         private ControlPointHandle? _clickTargetHandle;
         private SurfaceNode?        _clickTargetEdgeSurf;
         private SurfaceEdge         _clickTargetEdge;
 
-        // Multi-drag state
+        // Active multi-drag
         private readonly List<ControlPointHandle> _multiDragHandles = new();
         private Plane   _dragPlane;
-        private Vector3 _dragOriginHit;
+        private Vector3 _dragOriginHit;  // translate: initial hit on drag plane
+        private Vector3 _scaleCoM;       // scale: pivot = center of mass
+        private Vector3 _rotatePivot;    // rotate: pivot = surface hit point
 
         private static readonly SurfaceEdge[] AllEdges =
             { SurfaceEdge.UMin, SurfaceEdge.UMax, SurfaceEdge.VMin, SurfaceEdge.VMax };
@@ -102,17 +109,14 @@ namespace SplineSculptor.VR
 
             if (@event is InputEventMouseButton mb)
             {
-                // ── Double-click: move orbit pivot (check before regular press) ────
+                // ── Double-click (before regular press) ───────────────────────────
                 if (mb.ButtonIndex == MouseButton.Left && mb.Pressed && mb.DoubleClick)
                 {
                     HandleDoubleClick(mb.Position);
                     return;
                 }
 
-                // ── Orbit / zoom ──────────────────────────────────────────────────
-                if (mb.ButtonIndex == MouseButton.Right)
-                    _orbiting = mb.Pressed;
-
+                // ── Wheel zoom ────────────────────────────────────────────────────
                 if (mb.ButtonIndex == MouseButton.WheelUp)
                 {
                     _orbitDist = Mathf.Max(0.5f, _orbitDist - 0.3f);
@@ -126,7 +130,7 @@ namespace SplineSculptor.VR
                         _camera.Position = _orbitTarget + _orbitBasis.Z * _orbitDist;
                 }
 
-                // ── Left mouse down: start threshold watch ────────────────────────
+                // ── Left button ───────────────────────────────────────────────────
                 if (mb.ButtonIndex == MouseButton.Left && mb.Pressed)
                 {
                     _mouseDownPos        = mb.Position;
@@ -134,16 +138,62 @@ namespace SplineSculptor.VR
                     _clickTargetHandle   = _hoveredHandle;
                     _clickTargetEdgeSurf = _edgeHoverSurfNode;
                     _clickTargetEdge     = _edgeHoverEdge;
+                    _thresholdButton     = MouseButton.Left;
                     _dragState           = DragState.Threshold;
                     return;
                 }
-
-                // ── Left mouse up: commit click or finalize drag ───────────────────
                 if (mb.ButtonIndex == MouseButton.Left && !mb.Pressed)
                 {
-                    if (_dragState == DragState.Threshold)        HandleClick();
-                    if (_dragState == DragState.DraggingHandles)  FinalizeDrag();
-                    _dragState = DragState.Idle;
+                    if (_dragState == DragState.Threshold)       { HandleClick(); _dragState = DragState.Idle; }
+                    else if (_dragState == DragState.DraggingHandles) FinalizeDrag(); // sets Idle
+                    else _dragState = DragState.Idle; // EmptyDrag or other
+                    return;
+                }
+
+                // ── Middle button: scale ──────────────────────────────────────────
+                if (mb.ButtonIndex == MouseButton.Middle && mb.Pressed)
+                {
+                    if (_dragState == DragState.Idle &&
+                        (Selection?.SelectedHandles.Count ?? 0) > 0)
+                    {
+                        _mouseDownPos    = mb.Position;
+                        _thresholdButton = MouseButton.Middle;
+                        _dragState       = DragState.Threshold;
+                    }
+                    return;
+                }
+                if (mb.ButtonIndex == MouseButton.Middle && !mb.Pressed)
+                {
+                    if (_dragState == DragState.ScalingHandles)  FinalizeDrag(); // sets Idle
+                    else if (_dragState == DragState.Threshold &&
+                             _thresholdButton == MouseButton.Middle)
+                        _dragState = DragState.Idle;
+                    return;
+                }
+
+                // ── Right button: rotate (with selection) or orbit ────────────────
+                if (mb.ButtonIndex == MouseButton.Right && mb.Pressed)
+                {
+                    if (_dragState == DragState.Idle &&
+                        (Selection?.SelectedHandles.Count ?? 0) > 0)
+                    {
+                        _mouseDownPos    = mb.Position;
+                        _thresholdButton = MouseButton.Right;
+                        _dragState       = DragState.Threshold;
+                    }
+                    else
+                    {
+                        _orbiting = true;
+                    }
+                    return;
+                }
+                if (mb.ButtonIndex == MouseButton.Right && !mb.Pressed)
+                {
+                    _orbiting = false;
+                    if (_dragState == DragState.RotatingHandles)     FinalizeDrag(); // sets Idle
+                    else if (_dragState == DragState.Threshold &&
+                             _thresholdButton == MouseButton.Right)
+                        _dragState = DragState.Idle;
                     return;
                 }
             }
@@ -151,7 +201,6 @@ namespace SplineSculptor.VR
             // ── Mouse motion ──────────────────────────────────────────────────────
             if (@event is InputEventMouseMotion mm)
             {
-                // Orbit rotation
                 if (_orbiting && _camera != null)
                 {
                     float dx = mm.Relative.X * 0.005f;
@@ -163,11 +212,15 @@ namespace SplineSculptor.VR
                     _camera.Basis    = _orbitBasis;
                 }
 
-                // Drag threshold check
-                if (_dragState == DragState.Threshold)
+                if (_dragState == DragState.Threshold &&
+                    (mm.Position - _mouseDownPos).Length() >= DragPixelThresh)
                 {
-                    if ((mm.Position - _mouseDownPos).Length() >= DragPixelThresh)
-                        TryStartDrag();
+                    switch (_thresholdButton)
+                    {
+                        case MouseButton.Left:   TryStartDrag();   break;
+                        case MouseButton.Middle: TryStartScale();  break;
+                        case MouseButton.Right:  TryStartRotate(); break;
+                    }
                 }
             }
         }
@@ -180,25 +233,47 @@ namespace SplineSculptor.VR
             var rayDir    = _camera.ProjectRayNormal(mousePos);
             var rayOrigin = _camera.GlobalPosition;
 
-            // ── Active multi-drag: move all selected handles ───────────────────────
-            if (_dragState == DragState.DraggingHandles && _multiDragHandles.Count > 0)
+            // ── Active transform drags (all skip hover detection) ──────────────────
+            if (_multiDragHandles.Count > 0)
             {
-                var hit = _dragPlane.IntersectsRay(rayOrigin, rayDir);
-                if (hit.HasValue)
+                switch (_dragState)
                 {
-                    var moveDelta = hit.Value - _dragOriginHit;
-                    foreach (var h in _multiDragHandles)
-                        h.MoveGroupDrag(moveDelta);
+                    case DragState.DraggingHandles:
+                        var hit = _dragPlane.IntersectsRay(rayOrigin, rayDir);
+                        if (hit.HasValue)
+                        {
+                            var moveDelta = hit.Value - _dragOriginHit;
+                            foreach (var h in _multiDragHandles) h.MoveGroupDrag(moveDelta);
+                        }
+                        return;
+
+                    case DragState.ScalingHandles:
+                        // Exponential: 200 px right = ×2, 200 px left = ×0.5
+                        float scaleFactor = Mathf.Pow(2f,
+                            (mousePos.X - _mouseDownPos.X) / 200f);
+                        foreach (var h in _multiDragHandles)
+                            h.ScaleGroupDrag(_scaleCoM, scaleFactor);
+                        return;
+
+                    case DragState.RotatingHandles:
+                        // Horizontal = yaw around camera up, vertical = pitch around camera right
+                        float rdx = (mousePos.X - _mouseDownPos.X) * 0.01f;
+                        float rdy = (mousePos.Y - _mouseDownPos.Y) * 0.01f;
+                        var rotY  = new Quaternion(_camera.Basis.Y.Normalized(), -rdx);
+                        var rotX  = new Quaternion(_camera.Basis.X.Normalized(), -rdy);
+                        var rot   = (rotY * rotX).Normalized();
+                        foreach (var h in _multiDragHandles) h.RotateGroupDrag(_rotatePivot, rot);
+                        return;
                 }
-                return; // skip hover detection while dragging
             }
+
+            if (_dragState == DragState.EmptyDrag) return;
 
             // ── Hover detection ───────────────────────────────────────────────────
 
             bool wantHandles = _currentTool is SelectionTool.Auto or SelectionTool.Point;
             bool wantEdges   = _currentTool is SelectionTool.Auto or SelectionTool.Edge;
 
-            // Find closest handle
             ControlPointHandle? closestHandle = null;
             float closestHandleDist = 0.08f;
             float closestHandleT    = float.MaxValue;
@@ -223,10 +298,8 @@ namespace SplineSculptor.VR
                 }
             }
 
-            // Find closest edge — in Auto mode only when no handle is hovered
             SurfaceNode? edgeNode = null;
             SurfaceEdge  edgeEdge = SurfaceEdge.UMin;
-
             if (wantEdges && (_currentTool == SelectionTool.Edge || closestHandle == null))
                 (edgeNode, edgeEdge) = FindHoveredEdge(rayOrigin, rayDir);
 
@@ -234,7 +307,7 @@ namespace SplineSculptor.VR
             UpdateEdgeHover(edgeNode, edgeEdge);
         }
 
-        // ─── Modifier key helper ──────────────────────────────────────────────────
+        // ─── Modifier helper ──────────────────────────────────────────────────────
 
         private static SelectionModifier GetModifier()
         {
@@ -246,15 +319,13 @@ namespace SplineSculptor.VR
             return SelectionModifier.Replace;
         }
 
-        // ─── Tool switching ───────────────────────────────────────────────────────
-
         private void SetTool(SelectionTool tool)
         {
             _currentTool = tool;
             GD.Print($"[Tool] {tool}  (Q=Auto  W=Point  E=Edge  R=Surface)");
         }
 
-        // ─── Click: selection (no drag threshold exceeded) ────────────────────────
+        // ─── Click (threshold not exceeded) ──────────────────────────────────────
 
         private void HandleClick()
         {
@@ -285,18 +356,21 @@ namespace SplineSculptor.VR
             }
             else if (mod == SelectionModifier.Replace)
             {
-                // Empty-space click with no modifier: try surface, else clear
                 TrySelectSurface(rayOrigin, rayDir);
             }
+            // modifier key + click on empty space → don't touch selection
         }
 
-        // ─── Drag start ───────────────────────────────────────────────────────────
+        // ─── Translate drag (left) ────────────────────────────────────────────────
 
         private void TryStartDrag()
         {
-            if (_camera == null || _clickTargetHandle == null) return; // future: lasso
+            if (_camera == null || _clickTargetHandle == null)
+            {
+                _dragState = DragState.EmptyDrag; // suppress click-on-release
+                return;
+            }
 
-            // If the clicked handle isn't selected yet, apply the modifier to select it
             bool alreadySelected =
                 Selection?.SelectedHandles.Contains(_clickTargetHandle) ?? false;
             if (!alreadySelected)
@@ -304,7 +378,6 @@ namespace SplineSculptor.VR
 
             if (Selection == null || Selection.SelectedHandles.Count == 0) return;
 
-            // Build a drag plane perpendicular to the view ray at the primary handle
             var rayDir     = _camera.ProjectRayNormal(_mouseDownPos);
             var rayOrigin  = _camera.GlobalPosition;
             _dragPlane     = new Plane(-rayDir, _clickTargetHandle.GlobalPosition);
@@ -320,13 +393,55 @@ namespace SplineSculptor.VR
             _dragState = DragState.DraggingHandles;
         }
 
-        // ─── Drag finalize ────────────────────────────────────────────────────────
+        // ─── Scale drag (middle) ──────────────────────────────────────────────────
+
+        private void TryStartScale()
+        {
+            if (_camera == null || (Selection?.SelectedHandles.Count ?? 0) == 0)
+            {
+                _dragState = DragState.EmptyDrag;
+                return;
+            }
+
+            _scaleCoM = GetSelectionCoM();
+
+            _multiDragHandles.Clear();
+            foreach (var h in Selection!.SelectedHandles)
+            {
+                h.StartGroupDrag();
+                _multiDragHandles.Add(h);
+            }
+            _dragState = DragState.ScalingHandles;
+        }
+
+        // ─── Rotate drag (right, with selection) ──────────────────────────────────
+
+        private void TryStartRotate()
+        {
+            if (_camera == null || (Selection?.SelectedHandles.Count ?? 0) == 0)
+            {
+                _dragState = DragState.EmptyDrag;
+                return;
+            }
+
+            // Pivot: surface hit under right-button-down position, fallback to CoM
+            _rotatePivot = GetPivotFromRaycast(_mouseDownPos);
+
+            _multiDragHandles.Clear();
+            foreach (var h in Selection!.SelectedHandles)
+            {
+                h.StartGroupDrag();
+                _multiDragHandles.Add(h);
+            }
+            _dragState = DragState.RotatingHandles;
+        }
+
+        // ─── Finalize any active transform drag ───────────────────────────────────
 
         private void FinalizeDrag()
         {
             var entries = new List<(SculptSurface surf, int u, int v,
                                     Vector3 startPos, Vector3 endPos, Polysurface? poly)>();
-
             foreach (var h in _multiDragHandles)
             {
                 var (surf, u, v, startPos, endPos, poly) = h.EndGroupDrag();
@@ -343,6 +458,7 @@ namespace SplineSculptor.VR
             foreach (var h in _multiDragHandles)
                 h.TriggerConstraintEnforcement();
             _multiDragHandles.Clear();
+            _dragState = DragState.Idle;
         }
 
         // ─── Double-click: move orbit pivot ───────────────────────────────────────
@@ -350,7 +466,6 @@ namespace SplineSculptor.VR
         private void HandleDoubleClick(Vector2 clickPos)
         {
             if (_camera == null) return;
-
             var rayDir    = _camera.ProjectRayNormal(clickPos);
             var rayOrigin = _camera.GlobalPosition;
 
@@ -369,6 +484,41 @@ namespace SplineSculptor.VR
                 _camera.Position = _orbitTarget + _orbitBasis.Z * _orbitDist;
                 GD.Print($"[Orbit] Target → {hitPos:F3}");
             }
+        }
+
+        // ─── Pivot helpers ────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Raycast at screenPos and return the surface hit world position.
+        /// Falls back to the CoM of selected handles if nothing is hit.
+        /// </summary>
+        private Vector3 GetPivotFromRaycast(Vector2 screenPos)
+        {
+            if (_camera == null) return GetSelectionCoM();
+
+            var rayDir    = _camera.ProjectRayNormal(screenPos);
+            var rayOrigin = _camera.GlobalPosition;
+
+            var spaceState = GetViewport().GetCamera3D()?.GetWorld3D().DirectSpaceState;
+            if (spaceState != null)
+            {
+                var rayParams = PhysicsRayQueryParameters3D.Create(
+                    rayOrigin, rayOrigin + rayDir * 500f);
+                rayParams.CollideWithBodies = true;
+                var result = spaceState.IntersectRay(rayParams);
+                if (result.Count > 0)
+                    return result["position"].As<Vector3>();
+            }
+            return GetSelectionCoM();
+        }
+
+        private Vector3 GetSelectionCoM()
+        {
+            if (Selection == null || Selection.SelectedHandles.Count == 0)
+                return Vector3.Zero;
+            var com = Vector3.Zero;
+            foreach (var h in Selection.SelectedHandles) com += h.GlobalPosition;
+            return com / Selection.SelectedHandles.Count;
         }
 
         // ─── Edge selection (visual + data) ──────────────────────────────────────
@@ -455,10 +605,10 @@ namespace SplineSculptor.VR
         private (SurfaceNode? node, SurfaceEdge edge) FindHoveredEdge(
             Vector3 origin, Vector3 dir)
         {
-            SurfaceNode? bestNode  = null;
-            SurfaceEdge  bestEdge  = SurfaceEdge.UMin;
-            float        bestDist  = 0.10f;
-            float        bestT     = float.MaxValue;
+            SurfaceNode? bestNode = null;
+            SurfaceEdge  bestEdge = SurfaceEdge.UMin;
+            float        bestDist = 0.10f;
+            float        bestT    = float.MaxValue;
 
             foreach (var child in SceneRoot!.GetChildren())
             {
@@ -475,16 +625,15 @@ namespace SplineSculptor.VR
                             float dist = RaySegmentDist(origin, dir, a, b, out float t);
                             if (dist < bestDist && t < bestT)
                             {
-                                bestDist  = dist;
-                                bestT     = t;
-                                bestNode  = surfNode;
-                                bestEdge  = edge;
+                                bestDist = dist;
+                                bestT    = t;
+                                bestNode = surfNode;
+                                bestEdge = edge;
                             }
                         }
                     }
                 }
             }
-
             return (bestNode, bestEdge);
         }
 
@@ -500,7 +649,6 @@ namespace SplineSculptor.VR
             rayParams.CollideWithBodies = true;
 
             var result = spaceState.IntersectRay(rayParams);
-
             if (result.Count > 0)
             {
                 var collider = result["collider"].As<Node>();
@@ -519,7 +667,6 @@ namespace SplineSculptor.VR
                 }
             }
 
-            // Clicked empty space — deselect everything
             GD.Print("[Select] Deselected (empty click)");
             ClearEdgeSelection();
             SetSelectedSurfaceNode(null);
@@ -536,11 +683,6 @@ namespace SplineSculptor.VR
 
         // ─── Ray–segment distance ─────────────────────────────────────────────────
 
-        /// <summary>
-        /// Returns the closest distance between a ray (origin + t*dir, t≥0) and
-        /// a finite segment [a, b]. Also outputs the ray parameter t at closest point.
-        /// Returns float.MaxValue if the segment is entirely behind the ray.
-        /// </summary>
         private static float RaySegmentDist(
             Vector3 ro, Vector3 rd, Vector3 a, Vector3 b, out float rayT)
         {
