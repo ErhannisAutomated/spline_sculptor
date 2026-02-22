@@ -27,7 +27,7 @@ namespace SplineSculptor.Interaction
         public IReadOnlyCollection<SculptSurface>      SelectedSurfaces     => _selectedSurfaces;
         public IReadOnlyCollection<Polysurface>        SelectedPolysurfaces => _selectedPolysurfaces;
         public IReadOnlyList<EdgeRef>                  SelectedEdges        => _selectedEdges;
-        public IReadOnlyCollection<ControlPointHandle> SelectedHandles      => _selectedHandles;
+        public IReadOnlySet<ControlPointHandle>          SelectedHandles      => _selectedHandles;
 
         /// <summary>Backward-compat: first selected edge (or null).</summary>
         public EdgeRef? SelectedEdge => _selectedEdges.Count > 0 ? _selectedEdges[0] : null;
