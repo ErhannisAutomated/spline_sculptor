@@ -38,7 +38,7 @@ namespace SplineSculptor.VR
                 {
                     FontSize    = 26,
                     PixelSize   = 0.00042f,
-                    Billboard   = BaseMaterial3D.BillboardMode.Enabled,
+                    Billboard   = BaseMaterial3D.BillboardModeEnum.Enabled,
                     NoDepthTest = true,
                     Modulate    = NormalColor,
                     Position    = Offsets[i],
