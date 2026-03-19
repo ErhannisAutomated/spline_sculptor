@@ -13,6 +13,15 @@ namespace SplineSculptor.VR
     /// Root manager. Initialises OpenXR (or desktop fallback), builds the VR rig
     /// and initial scene entirely in code — no child scene instancing required.
     ///
+    /// VR controls:
+    ///   RIGHT trigger   — grab nearest control-point handle
+    ///   RIGHT trackpad  — radial tool menu (Up=Auto Right=Point Down=Edge Left=Surface)
+    ///   RIGHT menu btn  — Redo
+    ///   LEFT trigger    — Undo
+    ///   LEFT trackpad   — radial ops menu (Up=Attach Right=G1 Down=Delete Left=Save)
+    ///   LEFT menu btn   — Undo
+    ///   BOTH grips      — two-hand pan / scale / rotate scene
+    ///
     /// Desktop keyboard shortcuts:
     ///   Ctrl+Z / Ctrl+Y  — undo / redo
     ///   P                — add a new standalone Bezier patch to the scene
@@ -85,22 +94,33 @@ namespace SplineSculptor.VR
             var camera = new XRCamera3D { Name = "XRCamera3D" };
             origin.AddChild(camera);
 
+            // Left hand — navigation + commands
             var leftCtrl = new XRController3D { Name = "LeftController", Tracker = "left_hand" };
             origin.AddChild(leftCtrl);
-            var leftHand = new ControllerHand { Name = "LeftHand" };
+            var leftHand = new ControllerHand { Name = "LeftHand", IsLeft = true };
             leftCtrl.AddChild(leftHand);
-            leftHand.SetSceneRoot(_sceneRoot!);
+            leftHand.SceneRoot = _sceneRoot!;
+            leftHand.OnUndo        = () => { GD.Print($"[Undo] {_scene.UndoStack.UndoDescription ?? "(nothing)"}"); _scene.UndoStack.Undo(); };
+            leftHand.OnRedo        = () => { GD.Print($"[Redo] {_scene.UndoStack.RedoDescription ?? "(nothing)"}"); _scene.UndoStack.Redo(); };
+            leftHand.OnSpawnAttach = AttachOrSpawn;
+            leftHand.OnToggleG1    = ToggleEdgeConstraint;
+            leftHand.OnDelete      = DeleteSelected;
+            leftHand.OnSave        = SaveScene;
 
+            // Right hand — sculpt
             var rightCtrl = new XRController3D { Name = "RightController", Tracker = "right_hand" };
             origin.AddChild(rightCtrl);
-            var rightHand = new ControllerHand { Name = "RightHand" };
+            var rightHand = new ControllerHand { Name = "RightHand", IsLeft = false };
             rightCtrl.AddChild(rightHand);
-            rightHand.SetSceneRoot(_sceneRoot!);
+            rightHand.SceneRoot  = _sceneRoot!;
+            rightHand.Selection  = _selection;
+            rightHand.OnUndo     = leftHand.OnUndo;
+            rightHand.OnRedo     = leftHand.OnRedo;
 
             leftHand.OtherHand  = rightHand;
             rightHand.OtherHand = leftHand;
 
-            // World navigator watches both controllers directly
+            // World navigator watches both grips for two-hand pan/scale/rotate
             var nav = new WorldNavigator(_sceneRoot!, leftCtrl, rightCtrl);
             origin.AddChild(nav);
         }

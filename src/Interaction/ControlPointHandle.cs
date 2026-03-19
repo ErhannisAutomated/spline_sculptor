@@ -45,7 +45,12 @@ namespace SplineSculptor.Interaction
             _meshInstance = GetChildOrNull<MeshInstance3D>(0);
         }
 
-        public Vector3 GlobalGrabPosition => GlobalPosition;
+        public Vector3       GlobalGrabPosition => GlobalPosition;
+
+        /// <summary>The NURBS surface this handle belongs to. Used by ControllerHand for auto-select.</summary>
+        public SculptSurface? Surface     => _surface;
+        /// <summary>The polysurface this handle belongs to.</summary>
+        public Polysurface?   OwnerPoly   => _polysurface;
 
         // ─── VR single-handle grab API ────────────────────────────────────────────
 
