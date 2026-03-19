@@ -57,39 +57,58 @@ namespace SplineSculptor.VR
 
 			ControlPointHandle.SceneRef = _scene;
 
-			// Subscribe before InitXR — Godot may fire TrackerAdded synchronously
-			// during xrInterface.Initialize(), so we must be listening before that call.
+			// Subscribe before anything XR-related — TrackerAdded can fire during Initialize()
 			XRServer.TrackerAdded += OnTrackerAdded;
 
-			bool vrAvailable = InitXR();
-			if (vrAvailable)
+			// Build VR rig FIRST so XRController3D nodes exist in the scene tree when
+			// OpenXR initialises and registers trackers. godot-xr-tools does the same:
+			// nodes live in the .tscn file and are therefore present before Initialize().
+			var xrInterface = XRServer.FindInterface("OpenXR");
+			if (xrInterface != null)
+			{
 				BuildVRRig();
+
+				if (xrInterface.Initialize())
+				{
+					GD.Print("[VRManager] OpenXR initialised.");
+					DisplayServer.WindowSetVsyncMode(DisplayServer.VsyncMode.Disabled);
+
+					// Defer UseXR = true until the session is actually focussed.
+					// Setting it immediately causes a black screen on some runtimes.
+					if (xrInterface is OpenXRInterface openxr)
+						openxr.SessionFocussed += OnXRSessionFocussed;
+					else
+						GetViewport().UseXR = true; // fallback for non-OpenXR interfaces
+				}
+				else
+				{
+					GD.Print("[VRManager] OpenXR init failed — desktop mode.");
+					// Remove rig nodes and fall back
+					foreach (var c in GetChildren())
+						if (c is XROrigin3D) c.QueueFree();
+					EnableDesktopFallback();
+				}
+			}
 			else
+			{
+				GD.Print("[VRManager] OpenXR interface not found — desktop mode.");
 				EnableDesktopFallback();
+			}
 
 			SpawnPatch("Default Patch");
 		}
 
-		// ─── XR init ─────────────────────────────────────────────────────────────
-
-		private bool InitXR()
+		private void OnXRSessionFocussed()
 		{
-			var xrInterface = XRServer.FindInterface("OpenXR");
-			if (xrInterface == null)
-			{
-				GD.Print("[VRManager] OpenXR interface not found — desktop mode.");
-				return false;
-			}
+			GD.Print("[VRManager] XR session focussed — enabling XR viewport.");
+			GetViewport().UseXR = true;
 
-			if (xrInterface.Initialize())
-			{
-				GD.Print("[VRManager] OpenXR initialised.");
-				GetViewport().UseXR = true;
-				return true;
-			}
+			// Scan trackers that registered before this point
+			var existing = XRServer.GetTrackers(255);
+			foreach (var entry in existing)
+				OnTrackerAdded(entry.Key.AsStringName(), 0);
 
-			GD.Print("[VRManager] OpenXR init failed — desktop mode.");
-			return false;
+			CallDeferred(MethodName.DebugXRState);
 		}
 
 		// ─── VR rig (created in code, no scene file needed) ──────────────────────
@@ -134,16 +153,7 @@ namespace SplineSculptor.VR
 			var nav = new WorldNavigator(_sceneRoot!, _leftCtrl, _rightCtrl);
 			origin.AddChild(nav);
 
-			// Scan for trackers already registered before this point
-			// (in case TrackerAdded fired during Initialize, before we subscribed).
-			var existing = XRServer.GetTrackers(255); // 255 = any tracker type
-			if (existing.Count == 0)
-				GD.Print("[XR] No trackers registered yet — will assign via TrackerAdded.");
-			foreach (var entry in existing)
-				OnTrackerAdded(entry.Key.AsStringName(), 0);
-
-			// Deferred dump so we see state after the first frame settles
-			CallDeferred(MethodName.DebugXRState);
+			// Tracker assignment happens via OnTrackerAdded / OnXRSessionFocussed
 		}
 
 		/// <summary>
