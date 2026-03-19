@@ -2,31 +2,31 @@ using Godot;
 
 namespace SplineSculptor.VR
 {
-    /// <summary>
-    /// Two-hand world pan / scale / rotate.
-    /// Initialised with direct node references by VRManager (no NodePath exports needed).
-    /// </summary>
-    [GlobalClass]
-    public partial class WorldNavigator : Node3D
-    {
-        private XRController3D? _left;
-        private XRController3D? _right;
-        private Node3D?         _world;
+	/// <summary>
+	/// Two-hand world pan / scale / rotate.
+	/// Initialised with direct node references by VRManager (no NodePath exports needed).
+	/// </summary>
+	[GlobalClass]
+	public partial class WorldNavigator : Node3D
+	{
+		private XRController3D? _left;
+		private XRController3D? _right;
+		private Node3D?         _world;
 
-        private bool    _wasActive;
-        private Vector3 _prevMidpoint;
-        private float   _prevSpan;
-        private float   _prevAngle;
+		private bool    _wasActive;
+		private Vector3 _prevMidpoint;
+		private float   _prevSpan;
+		private float   _prevAngle;
 
-        /// <summary>Called by VRManager after creating the rig.</summary>
-        public WorldNavigator(Node3D world, XRController3D left, XRController3D right)
-        {
-            _world = world;
-            _left  = left;
-            _right = right;
-        }
+		/// <summary>Called by VRManager after creating the rig.</summary>
+		public WorldNavigator(Node3D world, XRController3D left, XRController3D right)
+		{
+			_world = world;
+			_left  = left;
+			_right = right;
+		}
 
-        // Parameterless constructor required by Godot's [GlobalClass] registration.
+		// Parameterless constructor required by Godot's [GlobalClass] registration.
         public WorldNavigator() { }
 
         public override void _PhysicsProcess(double delta)

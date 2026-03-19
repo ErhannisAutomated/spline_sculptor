@@ -5,26 +5,26 @@ using SplineSculptor.Rendering;
 
 namespace SplineSculptor.Interaction
 {
-    /// <summary>
-    /// Node3D attached to each control point sphere.
-    /// Implements IGrabTarget so ControllerHand can drag it.
-    /// On drag end, wraps the move in a MoveControlPointCommand for undo/redo.
-    ///
-    /// Group-drag API (used by DesktopInteraction for multi-select):
-    ///   StartGroupDrag / MoveGroupDrag / EndGroupDrag / TriggerConstraintEnforcement
-    /// </summary>
-    [GlobalClass]
-    public partial class ControlPointHandle : Node3D, IGrabTarget
-    {
-        private SculptSurface? _surface;
-        private Polysurface?   _polysurface;
-        private int _u;
-        private int _v;
+	/// <summary>
+	/// Node3D attached to each control point sphere.
+	/// Implements IGrabTarget so ControllerHand can drag it.
+	/// On drag end, wraps the move in a MoveControlPointCommand for undo/redo.
+	///
+	/// Group-drag API (used by DesktopInteraction for multi-select):
+	///   StartGroupDrag / MoveGroupDrag / EndGroupDrag / TriggerConstraintEnforcement
+	/// </summary>
+	[GlobalClass]
+	public partial class ControlPointHandle : Node3D, IGrabTarget
+	{
+		private SculptSurface? _surface;
+		private Polysurface?   _polysurface;
+		private int _u;
+		private int _v;
 
-        private Vector3 _dragStartPos;
-        private bool    _isDragging = false;
+		private Vector3 _dragStartPos;
+		private bool    _isDragging = false;
 
-        // Reference to the scene's undo stack (injected by PolysurfaceNode / Main)
+		// Reference to the scene's undo stack (injected by PolysurfaceNode / Main)
         public static SculptScene? SceneRef { get; set; }
 
         public bool IsHovered  { get; set; } = false;
