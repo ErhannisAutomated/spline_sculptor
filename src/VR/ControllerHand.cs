@@ -33,8 +33,9 @@ namespace SplineSculptor.VR
         [Export] public bool   IsLeft        { get; set; } = false;
         [Export] public string TriggerAction { get; set; } = "trigger";
         [Export] public string GripAction    { get; set; } = "grip";
-        [Export] public string PrimaryAction { get; set; } = "primary";
-        [Export] public string MenuAction    { get; set; } = "menu";
+        [Export] public string PrimaryAction   { get; set; } = "primary";     // trackpad click (bool)
+        [Export] public string Primary2DAction { get; set; } = "primary_2d"; // trackpad position (Vector2)
+        [Export] public string MenuAction      { get; set; } = "menu";
         [Export] public float  HoverRadius   { get; set; } = 0.08f;
 
         // ─── Wired in by VRManager ────────────────────────────────────────────────
@@ -208,7 +209,7 @@ namespace SplineSculptor.VR
             bool trigger = _controller.IsButtonPressed(TriggerAction);
             bool menu    = _controller.IsButtonPressed(MenuAction);
             bool primary = _controller.IsButtonPressed(PrimaryAction);
-            var  padVec  = _controller.GetVector2(PrimaryAction);
+            var  padVec  = _controller.GetVector2(Primary2DAction);
 
             HandleTrigger(trigger);
             HandleMenuButton(menu);

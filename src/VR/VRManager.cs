@@ -39,6 +39,10 @@ namespace SplineSculptor.VR
 		private DesktopInteraction? _desktop;
 		private SelectionManager    _selection = new();
 
+		// Kept so TrackerAdded can update them at runtime
+		private XRController3D? _leftCtrl;
+		private XRController3D? _rightCtrl;
+
 		public SculptScene Scene => _scene;
 
 		public override void _Ready()
@@ -95,10 +99,12 @@ namespace SplineSculptor.VR
 			origin.AddChild(camera);
 
 			// Left hand — navigation + commands
-			var leftCtrl = new XRController3D { Name = "LeftController", Tracker = "left_hand" };
-			origin.AddChild(leftCtrl);
+			// Tracker name: "left_hand" works in Godot ≤4.3; later versions may use the full
+			// OpenXR path. OnTrackerAdded detects whichever name the runtime actually registers.
+			_leftCtrl = new XRController3D { Name = "LeftController", Tracker = "left_hand" };
+			origin.AddChild(_leftCtrl);
 			var leftHand = new ControllerHand { Name = "LeftHand", IsLeft = true };
-			leftCtrl.AddChild(leftHand);
+			_leftCtrl.AddChild(leftHand);
 			leftHand.SceneRoot = _sceneRoot!;
 			leftHand.OnUndo        = () => { GD.Print($"[Undo] {_scene.UndoStack.UndoDescription ?? "(nothing)"}"); _scene.UndoStack.Undo(); };
 			leftHand.OnRedo        = () => { GD.Print($"[Redo] {_scene.UndoStack.RedoDescription ?? "(nothing)"}"); _scene.UndoStack.Redo(); };
@@ -108,10 +114,10 @@ namespace SplineSculptor.VR
 			leftHand.OnSave        = SaveScene;
 
 			// Right hand — sculpt
-			var rightCtrl = new XRController3D { Name = "RightController", Tracker = "right_hand" };
-			origin.AddChild(rightCtrl);
+			_rightCtrl = new XRController3D { Name = "RightController", Tracker = "right_hand" };
+			origin.AddChild(_rightCtrl);
 			var rightHand = new ControllerHand { Name = "RightHand", IsLeft = false };
-			rightCtrl.AddChild(rightHand);
+			_rightCtrl.AddChild(rightHand);
 			rightHand.SceneRoot  = _sceneRoot!;
 			rightHand.Selection  = _selection;
 			rightHand.OnUndo     = leftHand.OnUndo;
@@ -120,9 +126,26 @@ namespace SplineSculptor.VR
 			leftHand.OtherHand  = rightHand;
 			rightHand.OtherHand = leftHand;
 
+			// Detect the actual tracker names the XR runtime registers.
+			// Logs help diagnose mismatches; reassignment fixes tracking if names differ.
+			XRServer.TrackerAdded += OnTrackerAdded;
+
 			// World navigator watches both grips for two-hand pan/scale/rotate
-			var nav = new WorldNavigator(_sceneRoot!, leftCtrl, rightCtrl);
+			var nav = new WorldNavigator(_sceneRoot!, _leftCtrl, _rightCtrl);
 			origin.AddChild(nav);
+		}
+
+		/// <summary>
+		/// Called when the XR runtime registers a new tracker.
+		/// Logs the name so tracker-name mismatches are easy to spot in the output,
+		/// then reassigns the XRController3D if the initial guess was wrong.
+		/// </summary>
+		private void OnTrackerAdded(StringName name, long type)
+		{
+			GD.Print($"[XR] Tracker added: '{name}'  type={type}");
+			string n = name.ToString().ToLower();
+			if (n.Contains("left")  && _leftCtrl  != null) { _leftCtrl.Tracker  = name; GD.Print("[XR] → assigned to left controller."); }
+			if (n.Contains("right") && _rightCtrl != null) { _rightCtrl.Tracker = name; GD.Print("[XR] → assigned to right controller."); }
 		}
 
 		// ─── Desktop fallback ─────────────────────────────────────────────────────
