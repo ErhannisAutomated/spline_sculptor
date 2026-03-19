@@ -71,7 +71,7 @@ namespace SplineSculptor.VR
 				if (xrInterface.Initialize())
 				{
 					GD.Print("[VRManager] OpenXR initialised.");
-					DisplayServer.WindowSetVsyncMode(DisplayServer.VsyncMode.Disabled);
+					DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Disabled);
 
 					// Defer UseXR = true until the session is actually focussed.
 					// Setting it immediately causes a black screen on some runtimes.
