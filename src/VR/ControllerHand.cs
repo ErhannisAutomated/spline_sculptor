@@ -148,12 +148,13 @@ namespace SplineSculptor.VR
                 Position = new Vector3(0f, 0.045f, -0.04f),
             };
 
+            // AddChild first — VRRadialMenu._Ready() initialises _labels, which SetOptions needs.
+            AddChild(_radialMenu);
+
             if (IsLeft)
                 _radialMenu.SetOptions("Attach Patch", "Toggle G1", "Delete", "Save");
             else
                 _radialMenu.SetOptions("Auto", "Point", "Edge", "Surface");
-
-            AddChild(_radialMenu);
         }
 
         // ─── Per-frame ────────────────────────────────────────────────────────────

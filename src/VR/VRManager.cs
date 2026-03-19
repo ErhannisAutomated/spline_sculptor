@@ -57,6 +57,10 @@ namespace SplineSculptor.VR
 
 			ControlPointHandle.SceneRef = _scene;
 
+			// Subscribe before InitXR — Godot may fire TrackerAdded synchronously
+			// during xrInterface.Initialize(), so we must be listening before that call.
+			XRServer.TrackerAdded += OnTrackerAdded;
+
 			bool vrAvailable = InitXR();
 			if (vrAvailable)
 				BuildVRRig();
@@ -126,26 +130,44 @@ namespace SplineSculptor.VR
 			leftHand.OtherHand  = rightHand;
 			rightHand.OtherHand = leftHand;
 
-			// Detect the actual tracker names the XR runtime registers.
-			// Logs help diagnose mismatches; reassignment fixes tracking if names differ.
-			XRServer.TrackerAdded += OnTrackerAdded;
-
 			// World navigator watches both grips for two-hand pan/scale/rotate
 			var nav = new WorldNavigator(_sceneRoot!, _leftCtrl, _rightCtrl);
 			origin.AddChild(nav);
+
+			// Scan for trackers already registered before this point
+			// (in case TrackerAdded fired during Initialize, before we subscribed).
+			var existing = XRServer.GetTrackers(255); // 255 = any tracker type
+			if (existing.Count == 0)
+				GD.Print("[XR] No trackers registered yet — will assign via TrackerAdded.");
+			foreach (var entry in existing)
+				OnTrackerAdded(entry.Key.AsStringName(), 0);
+
+			// Deferred dump so we see state after the first frame settles
+			CallDeferred(MethodName.DebugXRState);
 		}
 
 		/// <summary>
 		/// Called when the XR runtime registers a new tracker.
-		/// Logs the name so tracker-name mismatches are easy to spot in the output,
-		/// then reassigns the XRController3D if the initial guess was wrong.
+		/// Logs the name and reassigns XRController3D.Tracker to the exact runtime name.
 		/// </summary>
 		private void OnTrackerAdded(StringName name, long type)
 		{
-			GD.Print($"[XR] Tracker added: '{name}'  type={type}");
+			GD.Print($"[XR] TrackerAdded: '{name}'  type={type}");
 			string n = name.ToString().ToLower();
 			if (n.Contains("left")  && _leftCtrl  != null) { _leftCtrl.Tracker  = name; GD.Print("[XR] → assigned to left controller."); }
 			if (n.Contains("right") && _rightCtrl != null) { _rightCtrl.Tracker = name; GD.Print("[XR] → assigned to right controller."); }
+		}
+
+		/// <summary>Deferred one-frame diagnostic dump.</summary>
+		private void DebugXRState()
+		{
+			GD.Print("[XR] DebugXRState:");
+			GD.Print($"  left  tracker='{_leftCtrl?.Tracker}'  pos={_leftCtrl?.GlobalPosition}");
+			GD.Print($"  right tracker='{_rightCtrl?.Tracker}'  pos={_rightCtrl?.GlobalPosition}");
+			var trackers = XRServer.GetTrackers(255);
+			GD.Print($"  XRServer has {trackers.Count} tracker(s):");
+			foreach (var entry in trackers)
+				GD.Print($"    '{entry.Key}'");
 		}
 
 		// ─── Desktop fallback ─────────────────────────────────────────────────────
