@@ -68,7 +68,11 @@ namespace SplineSculptor.Interaction
         public void OnGrabMove(Vector3 controllerWorldPos)
         {
             if (!_isDragging || _surface == null) return;
-            _surface.ApplyControlPointMove(_u, _v, controllerWorldPos);
+            // Control points are stored in the local space of this handle's parent
+            // (ControlNetNode). Convert the controller world position before storing.
+            var parent   = GetParent() as Node3D;
+            var localPos = parent != null ? parent.ToLocal(controllerWorldPos) : controllerWorldPos;
+            _surface.ApplyControlPointMove(_u, _v, localPos);
             GlobalPosition = controllerWorldPos;
         }
 
