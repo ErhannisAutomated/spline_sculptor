@@ -10,7 +10,10 @@ namespace SplineSculptor.VR
     /// Attached as a child of each XRController3D.
     ///
     /// RIGHT hand (IsLeft = false):
-    ///   Trigger         — grab the nearest control-point handle
+    ///   Trigger         — action depends on ActiveTool:
+    ///                       Auto / Point  → grab nearest control-point handle
+    ///                       Edge          → select the nearest hovered edge
+    ///                       Surface       → select the nearest surface
     ///   Grip            — world-grab (WorldNavigator handles two-grip pan/scale/rotate)
     ///   Trackpad touch  — open tool-select radial menu (finger on pad)
     ///   Trackpad click  — activate highlighted menu item
@@ -45,13 +48,8 @@ namespace SplineSculptor.VR
 
         public ControllerHand? OtherHand  { get; set; }
         public Node3D?          SceneRoot  { get; set; }
-        /// <summary>
-        /// When the right hand releases a grabbed handle its parent surface is auto-selected here,
-        /// so that left-hand menu operations (Attach, Delete, ToggleG1) have a target.
-        /// </summary>
         public SelectionManager? Selection  { get; set; }
 
-        /// <summary>Operations injected by VRManager. ControllerHand calls these blindly.</summary>
         public Action? OnUndo        { get; set; }
         public Action? OnRedo        { get; set; }
         public Action? OnSpawnAttach { get; set; }
@@ -61,12 +59,10 @@ namespace SplineSculptor.VR
 
         // ─── Shared state (both hands see the same tool) ──────────────────────────
 
-        /// <summary>Currently active selection tool. Updated by right-hand trackpad.</summary>
         public static SelectionTool ActiveTool { get; private set; } = SelectionTool.Auto;
 
         // ─── Grab state ───────────────────────────────────────────────────────────
 
-        /// <summary>True while this hand is holding a control-point handle.</summary>
         public bool IsGrabbingTarget => _state == HandState.GrabbingTarget;
 
         // ─── Private ──────────────────────────────────────────────────────────────
@@ -80,6 +76,15 @@ namespace SplineSculptor.VR
         private VRRadialMenu?   _radialMenu;
         private MeshInstance3D? _pointerRay;
         private MeshInstance3D? _tipSphere;
+
+        // Edge hover / selection state
+        private SurfaceNode? _hoveredEdgeSurfNode;
+        private SurfaceEdge  _hoveredEdge;
+        private SurfaceNode? _selectedEdgeSurfNode;  // tracks visual so we can clear it
+        private SurfaceEdge  _selectedEdgeValue;
+
+        private static readonly SurfaceEdge[] AllEdges =
+            { SurfaceEdge.UMin, SurfaceEdge.UMax, SurfaceEdge.VMin, SurfaceEdge.VMax };
 
         // Edge-detection flags
         private bool _triggerWasDown;
@@ -98,7 +103,6 @@ namespace SplineSculptor.VR
 
         private void BuildControllerVisuals()
         {
-            // Controller body — a small dark box representative of a handheld wand
             var bodyMat = new StandardMaterial3D
             {
                 AlbedoColor = new Color(0.14f, 0.14f, 0.14f),
@@ -109,14 +113,11 @@ namespace SplineSculptor.VR
             {
                 Mesh             = new BoxMesh { Size = new Vector3(0.030f, 0.022f, 0.120f) },
                 MaterialOverride = bodyMat,
-                // Slightly behind the tracker origin (grip point is ~3 cm from tip)
                 Position         = new Vector3(0f, -0.010f, -0.025f),
             };
             AddChild(body);
 
-            // Pointer tip — small translucent sphere used as the interaction origin.
-            // Hover detection and grab moves use this position rather than the controller
-            // origin, giving a natural "point at it" feel.
+            // Pointer tip sphere — interaction origin (10 cm forward from controller)
             var tipMat = new StandardMaterial3D
             {
                 AlbedoColor     = new Color(0.70f, 0.90f, 1.00f, 0.50f),
@@ -130,12 +131,10 @@ namespace SplineSculptor.VR
             {
                 Mesh             = new SphereMesh { Radius = 0.005f, Height = 0.010f, RadialSegments = 8, Rings = 4 },
                 MaterialOverride = tipMat,
-                // 10 cm forward from the controller origin along -Z
                 Position         = new Vector3(0f, 0f, -0.10f),
             };
             AddChild(_tipSphere);
 
-            // Pointer ray — right hand only, 80 cm thin blue-white line
             if (!IsLeft)
             {
                 var rayMat = new StandardMaterial3D
@@ -157,9 +156,7 @@ namespace SplineSculptor.VR
                         RadialSegments = 6,
                     },
                     MaterialOverride = rayMat,
-                    // CylinderMesh is along Y; rotate 90° so it points along -Z (controller forward)
                     Rotation         = new Vector3(Mathf.Pi / 2f, 0f, 0f),
-                    // Centre of the cylinder sits 0.4 m in front of the controller origin
                     Position         = new Vector3(0f, 0f, -(0.40f + 0.06f)),
                 };
                 AddChild(_pointerRay);
@@ -170,14 +167,9 @@ namespace SplineSculptor.VR
         {
             _radialMenu = new VRRadialMenu
             {
-                // Slightly in front of and above the controller (palm-side when held naturally).
-                // Rotated 60° around X so the disc face
-                // ends up angled away from the player rather than seen edge-on.
                 Position = new Vector3(0f, 0.045f, -0.04f),
                 Rotation = new Vector3(Mathf.DegToRad(-60f), 0f, 0f),
             };
-
-            // AddChild first — VRRadialMenu._Ready() initialises _labels, which SetOptions needs.
             AddChild(_radialMenu);
 
             if (IsLeft)
@@ -200,23 +192,24 @@ namespace SplineSculptor.VR
         {
             if (SceneRoot == null) return;
 
-            // Use the tip sphere position as the interaction origin so that
-            // the user can aim precisely rather than relying on the controller body.
             var pos = _tipSphere != null ? _tipSphere.GlobalPosition : GlobalPosition;
 
+            bool wantHandles  = ActiveTool is SelectionTool.Auto or SelectionTool.Point;
+            bool wantEdges    = ActiveTool == SelectionTool.Edge;
+
+            // ── Control-point hover (Point / Auto) ────────────────────────────────
             IGrabTarget? closest    = null;
             float        closestDist = HoverRadius;
 
-            foreach (var child in SceneRoot.GetChildren())
+            if (wantHandles)
             {
-                if (child is not PolysurfaceNode polyNode) continue;
-                foreach (var handle in polyNode.AllHandles())
+                foreach (var child in SceneRoot.GetChildren())
                 {
-                    float d = pos.DistanceTo(handle.GlobalGrabPosition);
-                    if (d < closestDist)
+                    if (child is not PolysurfaceNode polyNode) continue;
+                    foreach (var handle in polyNode.AllHandles())
                     {
-                        closestDist = d;
-                        closest     = handle;
+                        float d = pos.DistanceTo(handle.GlobalGrabPosition);
+                        if (d < closestDist) { closestDist = d; closest = handle; }
                     }
                 }
             }
@@ -228,9 +221,48 @@ namespace SplineSculptor.VR
                 if (_hoveredTarget != null) _hoveredTarget.IsHovered = true;
             }
 
-            // Dim the pointer ray when a handle is close enough to grab
+            // ── Edge hover (Edge mode) ────────────────────────────────────────────
+            SurfaceNode? edgeNode = null;
+            SurfaceEdge  edgeEdge = SurfaceEdge.UMin;
+            float        edgeDist = HoverRadius;
+
+            if (wantEdges)
+            {
+                foreach (var child in SceneRoot.GetChildren())
+                {
+                    if (child is not PolysurfaceNode polyNode) continue;
+                    foreach (var surfNode in polyNode.AllSurfaceNodes())
+                    {
+                        foreach (var edge in AllEdges)
+                        {
+                            int count = surfNode.GetEdgePointCount(edge);
+                            for (int i = 0; i < count - 1; i++)
+                            {
+                                var a = surfNode.GetEdgeWorldPoint(edge, i);
+                                var b = surfNode.GetEdgeWorldPoint(edge, i + 1);
+                                float d = PointSegmentDist(pos, a, b);
+                                if (d < edgeDist) { edgeDist = d; edgeNode = surfNode; edgeEdge = edge; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            bool edgeChanged = edgeNode != _hoveredEdgeSurfNode ||
+                               (edgeNode != null && edgeEdge != _hoveredEdge);
+            if (edgeChanged)
+            {
+                _hoveredEdgeSurfNode?.SetHoveredEdge(null);
+                _hoveredEdgeSurfNode = edgeNode;
+                _hoveredEdge         = edgeEdge;
+                _hoveredEdgeSurfNode?.SetHoveredEdge(edgeEdge);
+            }
+
+            // Dim the pointer ray when something is in range
             if (_pointerRay != null)
-                _pointerRay.Visible = (_hoveredTarget == null && _state == HandState.Idle);
+                _pointerRay.Visible = (_hoveredTarget == null &&
+                                       _hoveredEdgeSurfNode == null &&
+                                       _state == HandState.Idle);
         }
 
         // ─── Input dispatch ───────────────────────────────────────────────────────
@@ -256,24 +288,35 @@ namespace SplineSculptor.VR
         {
             if (IsLeft)
             {
-                // Left trigger rising edge → undo
-                if (triggerDown && !_triggerWasDown)
-                    OnUndo?.Invoke();
+                if (triggerDown && !_triggerWasDown) OnUndo?.Invoke();
                 _triggerWasDown = triggerDown;
                 return;
             }
 
-            // Right trigger → grab / release control point
             var tipPos = _tipSphere != null ? _tipSphere.GlobalPosition : GlobalPosition;
 
             switch (_state)
             {
                 case HandState.Idle:
-                    if (triggerDown && !_triggerWasDown && _hoveredTarget != null)
+                    if (triggerDown && !_triggerWasDown)
                     {
-                        _currentTarget = _hoveredTarget;
-                        _currentTarget.OnGrabStart(this);
-                        _state = HandState.GrabbingTarget;
+                        if (ActiveTool is SelectionTool.Auto or SelectionTool.Point)
+                        {
+                            if (_hoveredTarget != null)
+                            {
+                                _currentTarget = _hoveredTarget;
+                                _currentTarget.OnGrabStart(this);
+                                _state = HandState.GrabbingTarget;
+                            }
+                        }
+                        else if (ActiveTool == SelectionTool.Edge)
+                        {
+                            SelectHoveredEdge();
+                        }
+                        else if (ActiveTool == SelectionTool.Surface)
+                        {
+                            SelectNearestSurface(tipPos);
+                        }
                     }
                     break;
 
@@ -283,7 +326,6 @@ namespace SplineSculptor.VR
                     else
                     {
                         _currentTarget?.OnGrabEnd(this);
-                        // Auto-select this surface so left-hand menu operations have a target
                         if (_currentTarget is ControlPointHandle cph && Selection != null)
                         {
                             if (cph.Surface != null)
@@ -300,16 +342,70 @@ namespace SplineSculptor.VR
             _triggerWasDown = triggerDown;
         }
 
+        // ─── Edge selection ───────────────────────────────────────────────────────
+
+        private void SelectHoveredEdge()
+        {
+            if (_hoveredEdgeSurfNode == null) return;
+            var polyNode = _hoveredEdgeSurfNode.GetParent() as PolysurfaceNode;
+            if (polyNode?.Data == null || _hoveredEdgeSurfNode.Surface == null) return;
+
+            // Clear previous VR-selected edge visual
+            _selectedEdgeSurfNode?.SetSelectedEdge(null);
+            _selectedEdgeSurfNode = _hoveredEdgeSurfNode;
+            _selectedEdgeValue    = _hoveredEdge;
+            _selectedEdgeSurfNode.SetSelectedEdge(_hoveredEdge);
+
+            var er = new EdgeRef(_hoveredEdgeSurfNode.Surface, polyNode.Data, _hoveredEdge);
+            Selection?.ModifyEdgeSelection(er, SelectionModifier.Replace);
+            Selection?.SelectSurface(_hoveredEdgeSurfNode.Surface);
+            Selection?.SelectPolysurface(polyNode.Data);
+            GD.Print($"[VR Select] Edge {_hoveredEdge} on '{polyNode.Data.Name}'");
+        }
+
+        // ─── Surface selection ────────────────────────────────────────────────────
+
+        private void SelectNearestSurface(Vector3 pos)
+        {
+            if (SceneRoot == null) return;
+
+            SurfaceNode?     bestSurf = null;
+            PolysurfaceNode? bestPoly = null;
+            float bestDist = HoverRadius;
+
+            foreach (var child in SceneRoot.GetChildren())
+            {
+                if (child is not PolysurfaceNode polyNode) continue;
+                foreach (var surfNode in polyNode.AllSurfaceNodes())
+                {
+                    // Use edge boundary points as a proximity proxy for the surface
+                    foreach (var edge in AllEdges)
+                    {
+                        int count = surfNode.GetEdgePointCount(edge);
+                        for (int i = 0; i < count; i++)
+                        {
+                            float d = pos.DistanceTo(surfNode.GetEdgeWorldPoint(edge, i));
+                            if (d < bestDist) { bestDist = d; bestSurf = surfNode; bestPoly = polyNode; }
+                        }
+                    }
+                }
+            }
+
+            if (bestSurf?.Surface == null || bestPoly?.Data == null) return;
+
+            Selection?.SelectSurface(bestSurf.Surface);
+            Selection?.SelectPolysurface(bestPoly.Data);
+            GD.Print($"[VR Select] Surface in '{bestPoly.Data.Name}'");
+        }
+
         // ─── Menu button ──────────────────────────────────────────────────────────
 
         private void HandleMenuButton(bool menuDown)
         {
             if (menuDown && !_menuWasDown)
             {
-                if (IsLeft)
-                    OnUndo?.Invoke();
-                else
-                    OnRedo?.Invoke();
+                if (IsLeft) OnUndo?.Invoke();
+                else        OnRedo?.Invoke();
             }
             _menuWasDown = menuDown;
         }
@@ -318,48 +414,31 @@ namespace SplineSculptor.VR
 
         private void HandlePrimaryPad(bool touchDown, bool primaryDown, Vector2 padVec)
         {
-            // Show menu when finger touches the pad (even before clicking).
-            // Fall back to showing on click-down if touch action isn't mapped.
             bool shouldShow = touchDown || primaryDown;
 
             if (shouldShow && !_menuShowing)
             {
                 _menuShowing = true;
-                if (_radialMenu != null)
-                {
-                    _radialMenu.ResetHighlight();
-                    _radialMenu.Visible = true;
-                }
+                if (_radialMenu != null) { _radialMenu.ResetHighlight(); _radialMenu.Visible = true; }
             }
             else if (!shouldShow && _menuShowing)
             {
-                // Finger lifted without clicking — dismiss without executing
                 _menuShowing = false;
-                if (_radialMenu != null)
-                    _radialMenu.Visible = false;
+                if (_radialMenu != null) _radialMenu.Visible = false;
             }
 
-            // Update highlight while menu is showing
             if (_menuShowing && _radialMenu != null)
                 _radialMenu.UpdateHighlight(GetSector(padVec));
 
-            // Click falling edge while menu is showing → execute selected sector
             if (_menuShowing && !primaryDown && _primaryWasDown)
             {
                 int sector = GetSector(padVec);
-                if (sector >= 0)
-                    ExecuteSector(sector);
-                // Menu stays open until finger leaves (hide handled by !shouldShow above)
+                if (sector >= 0) ExecuteSector(sector);
             }
 
             _primaryWasDown = primaryDown;
         }
 
-        /// <summary>
-        /// Map a trackpad/joystick Vector2 to a sector index.
-        /// Returns -1 when the stick is close to centre (cancel).
-        /// 0=Up  1=Right  2=Down  3=Left
-        /// </summary>
         private static int GetSector(Vector2 v)
         {
             if (v.Length() < 0.40f) return -1;
@@ -374,15 +453,14 @@ namespace SplineSculptor.VR
             {
                 switch (sector)
                 {
-                    case 0: OnSpawnAttach?.Invoke(); break;   // Up    = Attach / Spawn Patch
-                    case 1: OnToggleG1?.Invoke();    break;   // Right = Toggle G1
-                    case 2: OnDelete?.Invoke();      break;   // Down  = Delete surface
-                    case 3: OnSave?.Invoke();        break;   // Left  = Save scene
+                    case 0: OnSpawnAttach?.Invoke(); break;
+                    case 1: OnToggleG1?.Invoke();    break;
+                    case 2: OnDelete?.Invoke();      break;
+                    case 3: OnSave?.Invoke();        break;
                 }
             }
             else
             {
-                // Right hand: tool switch
                 ActiveTool = sector switch
                 {
                     0 => SelectionTool.Auto,
@@ -393,6 +471,17 @@ namespace SplineSculptor.VR
                 };
                 GD.Print($"[VR Tool] {ActiveTool}");
             }
+        }
+
+        // ─── Point-to-segment distance ────────────────────────────────────────────
+
+        private static float PointSegmentDist(Vector3 p, Vector3 a, Vector3 b)
+        {
+            var ab = b - a;
+            float len2 = ab.LengthSquared();
+            if (len2 < 1e-10f) return p.DistanceTo(a);
+            float t = Mathf.Clamp((p - a).Dot(ab) / len2, 0f, 1f);
+            return p.DistanceTo(a + t * ab);
         }
     }
 }
