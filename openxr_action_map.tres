@@ -1,5 +1,11 @@
 [gd_resource type="OpenXRActionMap" format=3 uid="uid://dangifts8llkj"]
 
+[sub_resource type="OpenXRAction" id="OpenXRAction_default_pose"]
+resource_name = "default"
+localized_name = "Default Pose (Grip)"
+action_type = 3
+toplevel_paths = PackedStringArray("/user/hand/left", "/user/hand/right")
+
 [sub_resource type="OpenXRAction" id="OpenXRAction_grip"]
 resource_name = "grip"
 localized_name = "Grip"
@@ -29,7 +35,15 @@ toplevel_paths = PackedStringArray("/user/hand/left", "/user/hand/right")
 [sub_resource type="OpenXRActionSet" id="OpenXRActionSet_default"]
 resource_name = "default"
 localized_name = "Default"
-actions = [SubResource("OpenXRAction_grip"), SubResource("OpenXRAction_trigger"), SubResource("OpenXRAction_primary"), SubResource("OpenXRAction_primary_2d"), SubResource("OpenXRAction_menu")]
+actions = [SubResource("OpenXRAction_default_pose"), SubResource("OpenXRAction_grip"), SubResource("OpenXRAction_trigger"), SubResource("OpenXRAction_primary"), SubResource("OpenXRAction_primary_2d"), SubResource("OpenXRAction_menu")]
+
+[sub_resource type="OpenXRIPBinding" id="OpenXRIPBinding_pose_left"]
+action = SubResource("OpenXRAction_default_pose")
+binding_path = "/user/hand/left/input/grip/pose"
+
+[sub_resource type="OpenXRIPBinding" id="OpenXRIPBinding_pose_right"]
+action = SubResource("OpenXRAction_default_pose")
+binding_path = "/user/hand/right/input/grip/pose"
 
 [sub_resource type="OpenXRIPBinding" id="OpenXRIPBinding_6ivru"]
 action = SubResource("OpenXRAction_grip")
@@ -73,7 +87,7 @@ binding_path = "/user/hand/right/input/menu/click"
 
 [sub_resource type="OpenXRInteractionProfile" id="Profile_vive"]
 interaction_profile_path = "/interaction_profiles/htc/vive_controller"
-bindings = [SubResource("OpenXRIPBinding_6ivru"), SubResource("OpenXRIPBinding_vfhwq"), SubResource("OpenXRIPBinding_5w03k"), SubResource("OpenXRIPBinding_typ1r"), SubResource("OpenXRIPBinding_clvbf"), SubResource("OpenXRIPBinding_5bppb"), SubResource("OpenXRIPBinding_3k6la"), SubResource("OpenXRIPBinding_i8esw"), SubResource("OpenXRIPBinding_um1hv"), SubResource("OpenXRIPBinding_oqnsu")]
+bindings = [SubResource("OpenXRIPBinding_pose_left"), SubResource("OpenXRIPBinding_pose_right"), SubResource("OpenXRIPBinding_6ivru"), SubResource("OpenXRIPBinding_vfhwq"), SubResource("OpenXRIPBinding_5w03k"), SubResource("OpenXRIPBinding_typ1r"), SubResource("OpenXRIPBinding_clvbf"), SubResource("OpenXRIPBinding_5bppb"), SubResource("OpenXRIPBinding_3k6la"), SubResource("OpenXRIPBinding_i8esw"), SubResource("OpenXRIPBinding_um1hv"), SubResource("OpenXRIPBinding_oqnsu")]
 
 [sub_resource type="OpenXRIPBinding" id="OpenXRIPBinding_r5bl7"]
 action = SubResource("OpenXRAction_grip")
@@ -97,7 +111,7 @@ binding_path = "/user/hand/left/input/menu/click"
 
 [sub_resource type="OpenXRInteractionProfile" id="Profile_touch"]
 interaction_profile_path = "/interaction_profiles/oculus/touch_controller"
-bindings = [SubResource("OpenXRIPBinding_r5bl7"), SubResource("OpenXRIPBinding_ytptc"), SubResource("OpenXRIPBinding_iphn4"), SubResource("OpenXRIPBinding_3p2as"), SubResource("Binding_touch_menu")]
+bindings = [SubResource("OpenXRIPBinding_pose_left"), SubResource("OpenXRIPBinding_pose_right"), SubResource("OpenXRIPBinding_r5bl7"), SubResource("OpenXRIPBinding_ytptc"), SubResource("OpenXRIPBinding_iphn4"), SubResource("OpenXRIPBinding_3p2as"), SubResource("Binding_touch_menu")]
 
 [resource]
 action_sets = [SubResource("OpenXRActionSet_default")]
