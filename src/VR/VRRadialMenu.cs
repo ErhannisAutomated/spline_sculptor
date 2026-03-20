@@ -37,12 +37,14 @@ namespace SplineSculptor.VR
 			{
 				var lbl = new Label3D
 				{
-					FontSize    = 26,
-					PixelSize   = 0.00042f,
-					Billboard   = BaseMaterial3D.BillboardModeEnum.Enabled,
-					NoDepthTest = true,
-					Modulate    = NormalColor,
-					Position    = Offsets[i],
+					FontSize       = 26,
+					PixelSize      = 0.00042f,
+					Billboard      = BaseMaterial3D.BillboardModeEnum.Enabled,
+					NoDepthTest    = true,
+					// Higher SortingOffset = renders later = always on top of the disc
+					SortingOffset  = 1.0f,
+					Modulate       = NormalColor,
+					Position       = Offsets[i],
 				};
 				AddChild(lbl);
 				_labels[i] = lbl;
@@ -67,12 +69,7 @@ namespace SplineSculptor.VR
 				ShadingMode  = BaseMaterial3D.ShadingModeEnum.Unshaded,
 				NoDepthTest  = true,
 			};
-			// SortingOffset > 0 makes the disc sort as if it is farther from the camera,
-			// so it always renders before (behind) the labels regardless of menu angle.
-			// Without this, Godot's back-to-front transparent sort can place the disc
-			// on top of a label when that label's world position is farther than the disc
-			// centre — the semi-transparent disc then composites over the label and dims it.
-			_disc = new MeshInstance3D { Mesh = mesh, SortingOffset = 1.0f };
+			_disc = new MeshInstance3D { Mesh = mesh };
 			_disc.MaterialOverride = mat;
 			// Rotate so the flat face points in -Z (toward the player / controller forward)
 			_disc.Rotation = new Vector3(-Mathf.Pi / 2f, 0f, 0f);
