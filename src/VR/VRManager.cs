@@ -66,19 +66,17 @@ namespace SplineSculptor.VR
 			var xrInterface = XRServer.FindInterface("OpenXR");
 			if (xrInterface != null)
 			{
+				// Connect SessionFocussed BEFORE Initialize() — the signal can fire
+				// synchronously during Initialize() on some runtimes (Monado/SteamVR).
+				if (xrInterface is OpenXRInterface openxr)
+					openxr.SessionFocussed += OnXRSessionFocussed;
+
 				BuildVRRig();
 
 				if (xrInterface.Initialize())
 				{
 					GD.Print("[VRManager] OpenXR initialised.");
 					DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Disabled);
-
-					// Defer UseXR = true until the session is actually focussed.
-					// Setting it immediately causes a black screen on some runtimes.
-					if (xrInterface is OpenXRInterface openxr)
-						openxr.SessionFocussed += OnXRSessionFocussed;
-					else
-						GetViewport().UseXR = true; // fallback for non-OpenXR interfaces
 				}
 				else
 				{
