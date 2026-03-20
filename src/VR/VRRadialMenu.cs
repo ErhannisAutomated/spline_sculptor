@@ -68,8 +68,8 @@ namespace SplineSculptor.VR
 			};
 			_disc = new MeshInstance3D { Mesh = mesh };
 			_disc.MaterialOverride = mat;
-			// Rotate so the flat face points in +Z (toward the player)
-			_disc.Rotation = new Vector3(Mathf.Pi / 2f, 0f, 0f);
+			// Rotate so the flat face points in -Z (toward the player / controller forward)
+			_disc.Rotation = new Vector3(-Mathf.Pi / 2f, 0f, 0f);
 			AddChild(_disc);
 		}
 

@@ -90,7 +90,7 @@ namespace SplineSculptor.VR
 
 				// Scale delta: how much the hand separation changed
 				float scaleRatio = _prevSpan > 0.001f
-					? Mathf.Clamp(span / _prevSpan, 0.5f, 2.0f)
+					? span / _prevSpan
 					: 1.0f;
 
 				// Apply:  scale + rotate around prevMidpoint,  then translate to midPos
@@ -99,9 +99,7 @@ namespace SplineSculptor.VR
 				var newBasis = deltaRot * _world.GlobalTransform.Basis;
 				_world.GlobalTransform = new Transform3D(newBasis, newPos);
 
-				// Apply the scale change and clamp to a reasonable range
-				var s = (_world.Scale * scaleRatio).Clamp(Vector3.One * 0.05f, Vector3.One * 20f);
-				_world.Scale = s;
+				_world.Scale = _world.Scale * scaleRatio;
 			}
 
 			_prevMidpoint  = midPos;

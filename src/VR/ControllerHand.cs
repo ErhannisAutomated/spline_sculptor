@@ -12,14 +12,16 @@ namespace SplineSculptor.VR
     /// RIGHT hand (IsLeft = false):
     ///   Trigger         — grab the nearest control-point handle
     ///   Grip            — world-grab (WorldNavigator handles two-grip pan/scale/rotate)
-    ///   Trackpad press  — open tool-select radial menu
+    ///   Trackpad touch  — open tool-select radial menu (finger on pad)
+    ///   Trackpad click  — activate highlighted menu item
     ///                     Up=Auto  Right=Point  Down=Edge  Left=Surface
     ///   Menu button     — Redo
     ///
     /// LEFT hand (IsLeft = true):
     ///   Trigger         — Undo
     ///   Grip            — world-grab
-    ///   Trackpad press  — open operations radial menu
+    ///   Trackpad touch  — open operations radial menu
+    ///   Trackpad click  — activate highlighted item
     ///                     Up=Attach Patch  Right=Toggle G1  Down=Delete  Left=Save
     ///   Menu button     — Undo
     ///
@@ -30,13 +32,14 @@ namespace SplineSculptor.VR
     {
         // ─── Configuration ────────────────────────────────────────────────────────
 
-        [Export] public bool   IsLeft        { get; set; } = false;
-        [Export] public string TriggerAction { get; set; } = "trigger";
-        [Export] public string GripAction    { get; set; } = "grip";
-        [Export] public string PrimaryAction   { get; set; } = "primary";     // trackpad click (bool)
-        [Export] public string Primary2DAction { get; set; } = "primary_2d"; // trackpad position (Vector2)
+        [Export] public bool   IsLeft          { get; set; } = false;
+        [Export] public string TriggerAction   { get; set; } = "trigger";
+        [Export] public string GripAction      { get; set; } = "grip";
+        [Export] public string PrimaryAction   { get; set; } = "primary";      // trackpad click (bool)
+        [Export] public string Primary2DAction { get; set; } = "primary_2d";  // trackpad position (Vector2)
+        [Export] public string TouchAction     { get; set; } = "primary_touch"; // trackpad touch (bool)
         [Export] public string MenuAction      { get; set; } = "menu";
-        [Export] public float  HoverRadius   { get; set; } = 0.08f;
+        [Export] public float  HoverRadius     { get; set; } = 0.08f;
 
         // ─── Wired in by VRManager ────────────────────────────────────────────────
 
@@ -76,11 +79,13 @@ namespace SplineSculptor.VR
         private XRController3D? _controller;
         private VRRadialMenu?   _radialMenu;
         private MeshInstance3D? _pointerRay;
+        private MeshInstance3D? _tipSphere;
 
         // Edge-detection flags
         private bool _triggerWasDown;
         private bool _menuWasDown;
         private bool _primaryWasDown;
+        private bool _menuShowing;
 
         // ─── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -108,6 +113,27 @@ namespace SplineSculptor.VR
                 Position         = new Vector3(0f, -0.010f, -0.025f),
             };
             AddChild(body);
+
+            // Pointer tip — small translucent sphere used as the interaction origin.
+            // Hover detection and grab moves use this position rather than the controller
+            // origin, giving a natural "point at it" feel.
+            var tipMat = new StandardMaterial3D
+            {
+                AlbedoColor     = new Color(0.70f, 0.90f, 1.00f, 0.50f),
+                EmissionEnabled = true,
+                Emission        = new Color(0.30f, 0.60f, 1.00f, 0.25f),
+                Transparency    = BaseMaterial3D.TransparencyEnum.Alpha,
+                ShadingMode     = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                NoDepthTest     = true,
+            };
+            _tipSphere = new MeshInstance3D
+            {
+                Mesh             = new SphereMesh { Radius = 0.010f, Height = 0.020f, RadialSegments = 8, Rings = 4 },
+                MaterialOverride = tipMat,
+                // 10 cm forward from the controller origin along -Z
+                Position         = new Vector3(0f, 0f, -0.10f),
+            };
+            AddChild(_tipSphere);
 
             // Pointer ray — right hand only, 80 cm thin blue-white line
             if (!IsLeft)
@@ -144,8 +170,11 @@ namespace SplineSculptor.VR
         {
             _radialMenu = new VRRadialMenu
             {
-                // Slightly in front of and above the controller (palm-side when held naturally)
+                // Slightly in front of and above the controller (palm-side when held naturally).
+                // Rotated +60° around X so the disc face (which faces -Z in menu local space)
+                // ends up angled toward the player rather than lying flat.
                 Position = new Vector3(0f, 0.045f, -0.04f),
+                Rotation = new Vector3(Mathf.DegToRad(60f), 0f, 0f),
             };
 
             // AddChild first — VRRadialMenu._Ready() initialises _labels, which SetOptions needs.
@@ -171,7 +200,10 @@ namespace SplineSculptor.VR
         {
             if (SceneRoot == null) return;
 
-            var pos = GlobalPosition;
+            // Use the tip sphere position as the interaction origin so that
+            // the user can aim precisely rather than relying on the controller body.
+            var pos = _tipSphere != null ? _tipSphere.GlobalPosition : GlobalPosition;
+
             IGrabTarget? closest    = null;
             float        closestDist = HoverRadius;
 
@@ -210,11 +242,12 @@ namespace SplineSculptor.VR
             bool trigger = _controller.IsButtonPressed(TriggerAction);
             bool menu    = _controller.IsButtonPressed(MenuAction);
             bool primary = _controller.IsButtonPressed(PrimaryAction);
+            bool touch   = _controller.IsButtonPressed(TouchAction);
             var  padVec  = _controller.GetVector2(Primary2DAction);
 
             HandleTrigger(trigger);
             HandleMenuButton(menu);
-            HandlePrimaryPad(primary, padVec);
+            HandlePrimaryPad(touch, primary, padVec);
         }
 
         // ─── Trigger ──────────────────────────────────────────────────────────────
@@ -231,6 +264,8 @@ namespace SplineSculptor.VR
             }
 
             // Right trigger → grab / release control point
+            var tipPos = _tipSphere != null ? _tipSphere.GlobalPosition : GlobalPosition;
+
             switch (_state)
             {
                 case HandState.Idle:
@@ -244,7 +279,7 @@ namespace SplineSculptor.VR
 
                 case HandState.GrabbingTarget:
                     if (triggerDown)
-                        _currentTarget?.OnGrabMove(GlobalPosition);
+                        _currentTarget?.OnGrabMove(tipPos);
                     else
                     {
                         _currentTarget?.OnGrabEnd(this);
@@ -281,31 +316,40 @@ namespace SplineSculptor.VR
 
         // ─── Trackpad radial menu ─────────────────────────────────────────────────
 
-        private void HandlePrimaryPad(bool primaryDown, Vector2 padVec)
+        private void HandlePrimaryPad(bool touchDown, bool primaryDown, Vector2 padVec)
         {
-            if (primaryDown && !_primaryWasDown)
+            // Show menu when finger touches the pad (even before clicking).
+            // Fall back to showing on click-down if touch action isn't mapped.
+            bool shouldShow = touchDown || primaryDown;
+
+            if (shouldShow && !_menuShowing)
             {
-                // Rising edge — show menu
+                _menuShowing = true;
                 if (_radialMenu != null)
                 {
                     _radialMenu.ResetHighlight();
                     _radialMenu.Visible = true;
                 }
             }
-            else if (!primaryDown && _primaryWasDown)
+            else if (!shouldShow && _menuShowing)
             {
-                // Falling edge — execute and hide
+                // Finger lifted without clicking — dismiss without executing
+                _menuShowing = false;
                 if (_radialMenu != null)
                     _radialMenu.Visible = false;
+            }
 
+            // Update highlight while menu is showing
+            if (_menuShowing && _radialMenu != null)
+                _radialMenu.UpdateHighlight(GetSector(padVec));
+
+            // Click falling edge while menu is showing → execute selected sector
+            if (_menuShowing && !primaryDown && _primaryWasDown)
+            {
                 int sector = GetSector(padVec);
                 if (sector >= 0)
                     ExecuteSector(sector);
-            }
-            else if (primaryDown && _radialMenu != null)
-            {
-                // Held — update highlight
-                _radialMenu.UpdateHighlight(GetSector(padVec));
+                // Menu stays open until finger leaves (hide handled by !shouldShow above)
             }
 
             _primaryWasDown = primaryDown;
