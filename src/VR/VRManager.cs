@@ -170,12 +170,27 @@ namespace SplineSculptor.VR
 		private void DebugXRState()
 		{
 			GD.Print("[XR] DebugXRState:");
-			GD.Print($"  left  tracker='{_leftCtrl?.Tracker}'  pos={_leftCtrl?.GlobalPosition}");
-			GD.Print($"  right tracker='{_rightCtrl?.Tracker}'  pos={_rightCtrl?.GlobalPosition}");
+			var primary = XRServer.PrimaryInterface;
+			GD.Print($"  PrimaryInterface: {(primary != null ? primary.GetType().Name : "NULL")}");
+			GD.Print($"  UseXR: {GetViewport().UseXR}");
+
+			void PrintCtrl(string label, XRController3D? ctrl)
+			{
+				if (ctrl == null) { GD.Print($"  {label}: null"); return; }
+				var pose = ctrl.GetPose();
+				bool poseValid = pose != null && (pose.TrackingConfidence != XRPose.TrackingConfidenceEnum.None);
+				GD.Print($"  {label}: tracker='{ctrl.Tracker}'  pos={ctrl.GlobalPosition}  poseConfidence={pose?.TrackingConfidence}");
+			}
+			PrintCtrl("left ", _leftCtrl);
+			PrintCtrl("right", _rightCtrl);
+
 			var trackers = XRServer.GetTrackers(255);
 			GD.Print($"  XRServer has {trackers.Count} tracker(s):");
 			foreach (var entry in trackers)
-				GD.Print($"    '{entry.Key}'");
+			{
+				var t = XRServer.GetTracker(entry.Key.AsStringName());
+				GD.Print($"    '{entry.Key}'  type={t?.Type}");
+			}
 		}
 
 		// ─── Desktop fallback ─────────────────────────────────────────────────────
