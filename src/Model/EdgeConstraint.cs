@@ -45,7 +45,14 @@ namespace SplineSculptor.Model
 
             EnforceG0(src, srcEdge, dst, dstEdge);
             if (Type == Continuity.G1)
+            {
                 EnforceG1(src, srcEdge, dst, dstEdge);
+                // EnforceG0 fires GeometryChanged synchronously, so UpdateHandlePositions
+                // runs before EnforceG1 has modified the inner rows — handles end up at
+                // G0-only positions. Re-firing the event here syncs handles to the final
+                // G1-corrected state. The redundant CP write is harmless.
+                dst.ApplyControlPointMove(0, 0, dst.Geometry.ControlPoints[0, 0]);
+            }
         }
 
         private static void EnforceG0(

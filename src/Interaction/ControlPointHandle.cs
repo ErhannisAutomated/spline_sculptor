@@ -74,6 +74,10 @@ namespace SplineSculptor.Interaction
             var localPos = parent != null ? parent.ToLocal(controllerWorldPos) : controllerWorldPos;
             _surface.ApplyControlPointMove(_u, _v, localPos);
             GlobalPosition = controllerWorldPos;
+            // Keep neighbouring surfaces in sync during drag, not just on release.
+            // Without this, the other surface's seam handle sits frozen at the old
+            // position while the grabbed surface moves, giving the "invisible CP" effect.
+            _polysurface?.EnforceConstraints(_surface);
         }
 
         public void OnGrabEnd(Node grabber)
