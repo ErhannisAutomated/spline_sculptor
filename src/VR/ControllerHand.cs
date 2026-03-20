@@ -128,7 +128,7 @@ namespace SplineSculptor.VR
             };
             _tipSphere = new MeshInstance3D
             {
-                Mesh             = new SphereMesh { Radius = 0.010f, Height = 0.020f, RadialSegments = 8, Rings = 4 },
+                Mesh             = new SphereMesh { Radius = 0.005f, Height = 0.010f, RadialSegments = 8, Rings = 4 },
                 MaterialOverride = tipMat,
                 // 10 cm forward from the controller origin along -Z
                 Position         = new Vector3(0f, 0f, -0.10f),
@@ -171,10 +171,10 @@ namespace SplineSculptor.VR
             _radialMenu = new VRRadialMenu
             {
                 // Slightly in front of and above the controller (palm-side when held naturally).
-                // Rotated +60° around X so the disc face (which faces -Z in menu local space)
-                // ends up angled toward the player rather than lying flat.
+                // Rotated 60° around X so the disc face
+                // ends up angled away from the player rather than seen edge-on.
                 Position = new Vector3(0f, 0.045f, -0.04f),
-                Rotation = new Vector3(Mathf.DegToRad(60f), 0f, 0f),
+                Rotation = new Vector3(Mathf.DegToRad(-60f), 0f, 0f),
             };
 
             // AddChild first — VRRadialMenu._Ready() initialises _labels, which SetOptions needs.
