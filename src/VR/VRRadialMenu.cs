@@ -20,8 +20,7 @@ namespace SplineSculptor.VR
 		private static readonly Color DimColor       = new(0.40f, 0.40f, 0.40f, 0.55f);
 
 		// Label offsets in menu-local space.
-		// Z = -0.003 places labels just in front of the disc face (-Z faces toward the player)
-		// so they never clip into the background geometry and cause z-fighting dimming.
+		// Z = -0.003 places labels just in front of the disc face (-Z faces toward the player).
 		private static readonly Vector3[] Offsets =
 		{
 			new( 0.000f,  0.065f, -0.003f),   // Up
@@ -68,7 +67,12 @@ namespace SplineSculptor.VR
 				ShadingMode  = BaseMaterial3D.ShadingModeEnum.Unshaded,
 				NoDepthTest  = true,
 			};
-			_disc = new MeshInstance3D { Mesh = mesh };
+			// SortingOffset > 0 makes the disc sort as if it is farther from the camera,
+			// so it always renders before (behind) the labels regardless of menu angle.
+			// Without this, Godot's back-to-front transparent sort can place the disc
+			// on top of a label when that label's world position is farther than the disc
+			// centre — the semi-transparent disc then composites over the label and dims it.
+			_disc = new MeshInstance3D { Mesh = mesh, SortingOffset = 1.0f };
 			_disc.MaterialOverride = mat;
 			// Rotate so the flat face points in -Z (toward the player / controller forward)
 			_disc.Rotation = new Vector3(-Mathf.Pi / 2f, 0f, 0f);
