@@ -19,13 +19,15 @@ namespace SplineSculptor.VR
 		private static readonly Color HighlightColor = new(1.00f, 0.80f, 0.15f, 1.00f);
 		private static readonly Color DimColor       = new(0.40f, 0.40f, 0.40f, 0.55f);
 
-		// Label offsets in controller-local space (XY plane, Z facing player)
+		// Label offsets in menu-local space.
+		// Z = -0.003 places labels just in front of the disc face (-Z faces toward the player)
+		// so they never clip into the background geometry and cause z-fighting dimming.
 		private static readonly Vector3[] Offsets =
 		{
-			new( 0.000f,  0.065f, 0f),   // Up
-			new( 0.085f,  0.000f, 0f),   // Right
-			new( 0.000f, -0.065f, 0f),   // Down
-			new(-0.085f,  0.000f, 0f),   // Left
+			new( 0.000f,  0.065f, -0.003f),   // Up
+			new( 0.085f,  0.000f, -0.003f),   // Right
+			new( 0.000f, -0.065f, -0.003f),   // Down
+			new(-0.085f,  0.000f, -0.003f),   // Left
 		};
 
 		public override void _Ready()
