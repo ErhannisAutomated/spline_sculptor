@@ -117,7 +117,8 @@ namespace SplineSculptor.VR
         private bool _paintTriggerHeld = false;
 
         // Hull-select state (right hand)
-        private readonly List<Vector3> _hullPath         = new();
+        private readonly List<Vector3>             _hullPath           = new();
+        private readonly HashSet<ControlPointHandle> _hullPreviewHandles = new();
         private bool    _hullTriggerHeld  = false;
         private Vector3 _hullLastPos      = Vector3.Zero;
         private const float HullRecordMinDist = 0.02f; // minimum tip movement (metres) before recording
@@ -441,8 +442,10 @@ namespace SplineSculptor.VR
             else if (!triggerDown && _hullTriggerHeld)
             {
                 _hullTriggerHeld = false;
+                ClearHullPreview();
                 ApplyHullSelection();
                 _hullPath.Clear();
+                return;
             }
 
             if (!_hullTriggerHeld) return;
@@ -452,6 +455,44 @@ namespace SplineSculptor.VR
                 _hullPath.Add(tipPos);
                 _hullLastPos = tipPos;
             }
+
+            UpdateHullPreview(tipPos);
+        }
+
+        private void UpdateHullPreview(Vector3 tipPos)
+        {
+            if (SceneRoot == null) return;
+
+            // Build a preview hull from the recorded path + the current tip position
+            // so the preview stays responsive even between recorded waypoints.
+            var previewPts = new List<Vector3>(_hullPath);
+            if (tipPos.DistanceTo(_hullLastPos) > 1e-4f)
+                previewPts.Add(tipPos);
+
+            var hull = previewPts.Count >= 4 ? Build3DConvexHull(previewPts) : null;
+
+            // Clear previous preview state
+            foreach (var h in _hullPreviewHandles) h.IsPreviewSelected = false;
+            _hullPreviewHandles.Clear();
+
+            if (hull == null) return;
+
+            foreach (var child in SceneRoot.GetChildren())
+            {
+                if (child is not PolysurfaceNode polyNode) continue;
+                foreach (var handle in polyNode.AllHandles())
+                {
+                    if (!IsInsideConvexHull(hull, handle.GlobalPosition)) continue;
+                    handle.IsPreviewSelected = true;
+                    _hullPreviewHandles.Add(handle);
+                }
+            }
+        }
+
+        private void ClearHullPreview()
+        {
+            foreach (var h in _hullPreviewHandles) h.IsPreviewSelected = false;
+            _hullPreviewHandles.Clear();
         }
 
         private void ApplyHullSelection()
@@ -686,6 +727,7 @@ namespace SplineSculptor.VR
                             _paintedThisDrag.Clear();
                             _hullTriggerHeld        = false;
                             _hullPath.Clear();
+                            ClearHullPreview();
                             GD.Print("[VR] Exited selection mode.");
                         }
                     }

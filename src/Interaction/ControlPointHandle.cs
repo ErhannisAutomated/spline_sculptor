@@ -27,8 +27,10 @@ namespace SplineSculptor.Interaction
 		// Reference to the scene's undo stack (injected by PolysurfaceNode / Main)
         public static SculptScene? SceneRef { get; set; }
 
-        public bool IsHovered  { get; set; } = false;
-        public bool IsSelected { get; set; } = false;
+        public bool IsHovered        { get; set; } = false;
+        public bool IsSelected       { get; set; } = false;
+        /// <summary>True while a hull-select trace is active and this handle is inside the current preview hull.</summary>
+        public bool IsPreviewSelected { get; set; } = false;
 
         private MeshInstance3D? _meshInstance;
 
@@ -170,7 +172,13 @@ namespace SplineSculptor.Interaction
             if (_meshInstance == null || _meshInstance.MaterialOverride is not StandardMaterial3D mat)
                 return;
 
-            if (IsSelected && IsHovered)
+            if (IsPreviewSelected)
+            {
+                // Hull-select preview: magenta
+                mat.AlbedoColor = new Color(0.9f, 0.3f, 1.0f);
+                mat.Emission    = new Color(0.5f, 0.1f, 0.6f);
+            }
+            else if (IsSelected && IsHovered)
             {
                 // Selected + hovered: cyan
                 mat.AlbedoColor = new Color(0.3f, 1f, 1f);
