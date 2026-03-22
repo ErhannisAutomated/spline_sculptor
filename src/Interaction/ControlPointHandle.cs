@@ -144,6 +144,28 @@ namespace SplineSculptor.Interaction
             GlobalPosition = newPos;
         }
 
+        /// <summary>Apply a rigid-body world-space transform delta (single-grip VR selection transform).</summary>
+        public void ApplyWorldTransform(Transform3D delta)
+        {
+            if (!_isDragging || _surface == null) return;
+            var newWorldPos = delta * GlobalPosition;
+            var parent      = GetParent() as Node3D;
+            var newLocalPos = parent != null ? parent.ToLocal(newWorldPos) : newWorldPos;
+            _surface.ApplyControlPointMove(_u, _v, newLocalPos);
+            GlobalPosition = newWorldPos;
+        }
+
+        /// <summary>Apply a pivot+rotate+scale world-space transform (two-grip VR selection transform).</summary>
+        public void ApplyPivotTransform(Vector3 prevMid, Vector3 newMid, Basis deltaRot, float scaleRatio)
+        {
+            if (!_isDragging || _surface == null) return;
+            var newWorldPos = newMid + deltaRot * ((GlobalPosition - prevMid) * scaleRatio);
+            var parent      = GetParent() as Node3D;
+            var newLocalPos = parent != null ? parent.ToLocal(newWorldPos) : newWorldPos;
+            _surface.ApplyControlPointMove(_u, _v, newLocalPos);
+            GlobalPosition = newWorldPos;
+        }
+
         /// <summary>
         /// Finish the drag. Returns data the caller needs to build a
         /// MultiMoveControlPointCommand. Switches back to high-res.

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Godot;
 using SplineSculptor.Interaction;
 using SplineSculptor.Model;
+using SplineSculptor.Model.Undo;
 using SplineSculptor.Rendering;
 
 namespace SplineSculptor.VR
@@ -58,6 +59,9 @@ namespace SplineSculptor.VR
         public Node3D?           SceneRoot  { get; set; }
         public SelectionManager? Selection  { get; set; }
 
+        /// <summary>The raw XRController3D for this hand (used by the other hand during two-grip selection transform).</summary>
+        public XRController3D? Controller => _controller;
+
         public Action? OnUndo        { get; set; }
         public Action? OnRedo        { get; set; }
         public Action? OnSpawnAttach { get; set; }
@@ -70,6 +74,12 @@ namespace SplineSculptor.VR
         public static SelectionTool     ActiveTool            { get; private set; } = SelectionTool.Auto;
         public static SelectionMode     ActiveSelectionMode   { get; private set; } = SelectionMode.None;
         public static SelectionModifier ActiveSelectionModifier { get; private set; } = SelectionModifier.Replace;
+
+        /// <summary>
+        /// True when the left hand is on the Select or Modifier page.
+        /// WorldNavigator reads this to yield control to the selection transform.
+        /// </summary>
+        public static bool IsInSelectionMenu { get; private set; } = false;
 
         public enum SelectionMode { None, Paint, Hull }
 
@@ -122,6 +132,15 @@ namespace SplineSculptor.VR
         private bool    _hullTriggerHeld  = false;
         private Vector3 _hullLastPos      = Vector3.Zero;
         private const float HullRecordMinDist = 0.02f; // minimum tip movement (metres) before recording
+
+        // Selection transform state (left hand, active when IsInSelectionMenu)
+        private enum SelGripState { None, LeftOnly, RightOnly, Both }
+        private SelGripState _selGripState    = SelGripState.None;
+        private bool         _selGripActive   = false;
+        private Transform3D  _prevSelSingleTrans;   // prev-frame controller transform (single-grip)
+        private Vector3      _prevSelMidpoint;      // prev-frame midpoint (two-grip)
+        private Basis        _prevSelGripBasis;     // prev-frame grip basis (two-grip)
+        private float        _prevSelSpan;          // prev-frame hand separation (two-grip)
 
         // ─── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -219,6 +238,18 @@ namespace SplineSculptor.VR
         {
             UpdateHover();
             HandleInput();
+
+            if (IsLeft)
+            {
+                // Update the static flag AFTER HandleInput so any page changes are reflected.
+                bool inSel = CurrentPage == PageId.Select || CurrentPage == PageId.Modifier;
+                IsInSelectionMenu = inSel;
+
+                if (inSel)
+                    HandleSelectionTransform();
+                else if (_selGripActive)
+                    FinalizeSelectionTransform(); // exited selection menu while gripping
+            }
         }
 
         // ─── Hover detection ──────────────────────────────────────────────────────
@@ -384,6 +415,137 @@ namespace SplineSculptor.VR
             }
 
             _triggerWasDown = triggerDown;
+        }
+
+        // ─── Selection transform (grip while in Select / Modifier page) ───────────
+
+        private void HandleSelectionTransform()
+        {
+            if (Selection == null || Selection.SelectedHandles.Count == 0)
+            {
+                if (_selGripActive) FinalizeSelectionTransform();
+                return;
+            }
+
+            var rightCtrl = OtherHand?.Controller;
+            if (_controller == null) return;
+
+            bool lGrip   = _controller.IsButtonPressed(GripAction);
+            bool rGrip   = rightCtrl != null && rightCtrl.IsButtonPressed(GripAction);
+            bool anyGrip = lGrip || rGrip;
+
+            if (!_selGripActive && anyGrip)
+            {
+                _selGripActive = true;
+                _selGripState  = SelGripState.None;
+                foreach (var h in Selection.SelectedHandles)
+                    h.StartGroupDrag();
+                GD.Print($"[VR SelTransform] Grip start — {Selection.SelectedHandles.Count} handles.");
+            }
+            else if (_selGripActive && !anyGrip)
+            {
+                FinalizeSelectionTransform();
+                return;
+            }
+
+            if (!_selGripActive) return;
+
+            if (lGrip && rGrip && rightCtrl != null)
+                ApplySelectionTwoGrip(rightCtrl);
+            else if (lGrip)
+                ApplySelectionSingleGrip(_controller, SelGripState.LeftOnly);
+            else if (rGrip && rightCtrl != null)
+                ApplySelectionSingleGrip(rightCtrl, SelGripState.RightOnly);
+            else
+                _selGripState = SelGripState.None;
+        }
+
+        private void ApplySelectionSingleGrip(XRController3D ctrl, SelGripState state)
+        {
+            var cur = ctrl.GlobalTransform;
+            if (_selGripState == state)
+            {
+                var delta = cur * _prevSelSingleTrans.AffineInverse();
+                foreach (var h in Selection!.SelectedHandles)
+                    h.ApplyWorldTransform(delta);
+            }
+            _prevSelSingleTrans = cur;
+            _selGripState       = state;
+        }
+
+        private void ApplySelectionTwoGrip(XRController3D rightCtrl)
+        {
+            var (mid, span, basis) = ComputeSelectionGripFrame(rightCtrl);
+            if (_selGripState == SelGripState.Both)
+            {
+                var deltaRot   = basis * _prevSelGripBasis.Transposed();
+                float scaleRatio = _prevSelSpan > 0.001f ? span / _prevSelSpan : 1.0f;
+                foreach (var h in Selection!.SelectedHandles)
+                    h.ApplyPivotTransform(_prevSelMidpoint, mid, deltaRot, scaleRatio);
+            }
+            _prevSelMidpoint  = mid;
+            _prevSelGripBasis = basis;
+            _prevSelSpan      = span;
+            _selGripState     = SelGripState.Both;
+        }
+
+        private (Vector3 mid, float span, Basis basis) ComputeSelectionGripFrame(XRController3D rightCtrl)
+        {
+            var lPos  = _controller!.GlobalPosition;
+            var rPos  = rightCtrl.GlobalPosition;
+            var mid   = (lPos + rPos) * 0.5f;
+            float span = lPos.DistanceTo(rPos);
+
+            Vector3 xAxis = span > 0.001f ? (rPos - lPos) / span : Vector3.Right;
+
+            Vector3 lUp   = _controller.GlobalTransform.Basis.Y;
+            Vector3 rUp   = rightCtrl.GlobalTransform.Basis.Y;
+            Vector3 lPerp = lUp - xAxis * lUp.Dot(xAxis);
+            Vector3 rPerp = rUp - xAxis * rUp.Dot(xAxis);
+            float   lLen  = lPerp.Length();
+            float   rLen  = rPerp.Length();
+
+            Vector3 avgUp;
+            if (lLen > 0.001f && rLen > 0.001f)
+            {
+                lPerp /= lLen; rPerp /= rLen;
+                avgUp = lPerp.Dot(rPerp) > -0.5f ? (lPerp + rPerp).Normalized() : lPerp;
+            }
+            else if (lLen > 0.001f) avgUp = lPerp / lLen;
+            else if (rLen > 0.001f) avgUp = rPerp / rLen;
+            else                    avgUp = Vector3.Up;
+
+            Vector3 zAxis = xAxis.Cross(avgUp);
+            if (zAxis.LengthSquared() < 0.0001f) zAxis = xAxis.Cross(Vector3.Back);
+            zAxis = zAxis.Normalized();
+            Vector3 yAxis = zAxis.Cross(xAxis).Normalized();
+
+            return (mid, span, new Basis(xAxis, yAxis, zAxis));
+        }
+
+        private void FinalizeSelectionTransform()
+        {
+            _selGripActive = false;
+            _selGripState  = SelGripState.None;
+            if (Selection == null) return;
+
+            var entries = new List<(SculptSurface, int, int, Vector3, Vector3, Polysurface?)>();
+            foreach (var h in Selection.SelectedHandles)
+            {
+                var (surf, u, v, startPos, endPos, poly) = h.EndGroupDrag();
+                if (surf != null && endPos != startPos)
+                    entries.Add((surf!, u, v, startPos, endPos, poly));
+            }
+
+            if (entries.Count > 0)
+            {
+                var cmd = new MultiMoveControlPointCommand(entries);
+                ControlPointHandle.SceneRef?.UndoStack.Execute(new AlreadyAppliedCommand(cmd));
+                GD.Print($"[VR SelTransform] Grip end — {entries.Count} CPs moved, undo recorded.");
+            }
+
+            foreach (var h in Selection.SelectedHandles)
+                h.TriggerConstraintEnforcement();
         }
 
         // ─── Paint-select ─────────────────────────────────────────────────────────

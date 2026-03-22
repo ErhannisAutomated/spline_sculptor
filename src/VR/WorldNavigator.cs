@@ -50,6 +50,9 @@ namespace SplineSculptor.VR
 		{
 			if (_left == null || _right == null || _world == null) return;
 
+			// Yield to selection transform when the user is in the selection submenu.
+			if (ControllerHand.IsInSelectionMenu) { _gripState = GripState.None; return; }
+
 			bool lGrip = _left.IsButtonPressed("grip");
 			bool rGrip = _right.IsButtonPressed("grip");
 
