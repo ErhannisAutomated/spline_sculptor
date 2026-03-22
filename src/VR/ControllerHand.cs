@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Godot;
 using SplineSculptor.Interaction;
 using SplineSculptor.Model;
@@ -10,10 +11,11 @@ namespace SplineSculptor.VR
     /// Attached as a child of each XRController3D.
     ///
     /// RIGHT hand (IsLeft = false):
-    ///   Trigger         — action depends on ActiveTool:
-    ///                       Auto / Point  → grab nearest control-point handle
-    ///                       Edge          → select the nearest hovered edge
-    ///                       Surface       → select the nearest surface
+    ///   Trigger         — action depends on ActiveTool / ActiveSelectionMode:
+    ///                       Paint mode         → paint-select handles near tip
+    ///                       Auto / Point       → grab nearest control-point handle
+    ///                       Edge               → select the nearest hovered edge
+    ///                       Surface            → select the nearest surface
     ///   Grip            — world-grab (WorldNavigator handles two-grip pan/scale/rotate)
     ///   Trackpad touch  — open tool-select radial menu (finger on pad)
     ///   Trackpad click  — activate highlighted menu item
@@ -23,10 +25,16 @@ namespace SplineSculptor.VR
     /// LEFT hand (IsLeft = true):
     ///   Trigger         — Undo
     ///   Grip            — world-grab
-    ///   Trackpad touch  — open operations radial menu
-    ///   Trackpad click  — activate highlighted item
-    ///                     Up=Attach Patch  Right=Toggle G1  Down=Delete  Left=Save
-    ///   Menu button     — Undo
+    ///   Trackpad touch  — open nested ops menu
+    ///   Trackpad click  — navigate / activate menu item; on Modifier page: hold to set modifier
+    ///   Menu button     — pop menu level (at root → Undo)
+    ///
+    /// Left-hand menu tree:
+    ///   Root:     Select →   Modify →   File →   (empty)
+    ///   Select:   Paint       Hull(dim)  (empty)  (empty)
+    ///   Modifier: XOR         Add        Replace   Remove  [hold click → modifier active]
+    ///   Modify:   Attach      Toggle G1  Delete    (empty)
+    ///   File:     Save        (empty)    (empty)   (empty)
     ///
     /// Operations are injected as Actions by VRManager so this class stays decoupled.
     /// </summary>
@@ -38,16 +46,16 @@ namespace SplineSculptor.VR
         [Export] public bool   IsLeft          { get; set; } = false;
         [Export] public string TriggerAction   { get; set; } = "trigger";
         [Export] public string GripAction      { get; set; } = "grip";
-        [Export] public string PrimaryAction   { get; set; } = "primary";      // trackpad click (bool)
-        [Export] public string Primary2DAction { get; set; } = "primary_2d";  // trackpad position (Vector2)
-        [Export] public string TouchAction     { get; set; } = "primary_touch"; // trackpad touch (bool)
+        [Export] public string PrimaryAction   { get; set; } = "primary";
+        [Export] public string Primary2DAction { get; set; } = "primary_2d";
+        [Export] public string TouchAction     { get; set; } = "primary_touch";
         [Export] public string MenuAction      { get; set; } = "menu";
         [Export] public float  HoverRadius     { get; set; } = 0.08f;
 
         // ─── Wired in by VRManager ────────────────────────────────────────────────
 
-        public ControllerHand? OtherHand  { get; set; }
-        public Node3D?          SceneRoot  { get; set; }
+        public ControllerHand?  OtherHand  { get; set; }
+        public Node3D?           SceneRoot  { get; set; }
         public SelectionManager? Selection  { get; set; }
 
         public Action? OnUndo        { get; set; }
@@ -57,13 +65,21 @@ namespace SplineSculptor.VR
         public Action? OnDelete      { get; set; }
         public Action? OnSave        { get; set; }
 
-        // ─── Shared state (both hands see the same tool) ──────────────────────────
+        // ─── Shared static state ──────────────────────────────────────────────────
 
-        public static SelectionTool ActiveTool { get; private set; } = SelectionTool.Auto;
+        public static SelectionTool     ActiveTool            { get; private set; } = SelectionTool.Auto;
+        public static SelectionMode     ActiveSelectionMode   { get; private set; } = SelectionMode.None;
+        public static SelectionModifier ActiveSelectionModifier { get; private set; } = SelectionModifier.Replace;
+
+        public enum SelectionMode { None, Paint, Hull }
 
         // ─── Grab state ───────────────────────────────────────────────────────────
 
         public bool IsGrabbingTarget => _state == HandState.GrabbingTarget;
+
+        // ─── Left-hand menu page IDs ──────────────────────────────────────────────
+
+        private enum PageId { Root, Select, Modifier, Modify, File }
 
         // ─── Private ──────────────────────────────────────────────────────────────
 
@@ -80,17 +96,25 @@ namespace SplineSculptor.VR
         // Edge hover / selection state
         private SurfaceNode? _hoveredEdgeSurfNode;
         private SurfaceEdge  _hoveredEdge;
-        private SurfaceNode? _selectedEdgeSurfNode;  // tracks visual so we can clear it
+        private SurfaceNode? _selectedEdgeSurfNode;
         private SurfaceEdge  _selectedEdgeValue;
 
         private static readonly SurfaceEdge[] AllEdges =
             { SurfaceEdge.UMin, SurfaceEdge.UMax, SurfaceEdge.VMin, SurfaceEdge.VMax };
 
-        // Edge-detection flags
+        // Input edge-detection
         private bool _triggerWasDown;
         private bool _menuWasDown;
         private bool _primaryWasDown;
         private bool _menuShowing;
+
+        // Left-hand menu stack (parallel to VRRadialMenu's page stack)
+        private readonly Stack<PageId> _pageIds = new();
+        private PageId CurrentPage => _pageIds.Count > 0 ? _pageIds.Peek() : PageId.Root;
+
+        // Paint-select state (right hand)
+        private readonly HashSet<ControlPointHandle> _paintedThisDrag = new();
+        private bool _paintTriggerHeld = false;
 
         // ─── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -117,7 +141,6 @@ namespace SplineSculptor.VR
             };
             AddChild(body);
 
-            // Pointer tip sphere — interaction origin (10 cm forward from controller)
             var tipMat = new StandardMaterial3D
             {
                 AlbedoColor     = new Color(0.70f, 0.90f, 1.00f, 0.50f),
@@ -148,7 +171,7 @@ namespace SplineSculptor.VR
                 };
                 _pointerRay = new MeshInstance3D
                 {
-                    Mesh             = new CylinderMesh
+                    Mesh = new CylinderMesh
                     {
                         TopRadius      = 0.0018f,
                         BottomRadius   = 0.0018f,
@@ -173,9 +196,14 @@ namespace SplineSculptor.VR
             AddChild(_radialMenu);
 
             if (IsLeft)
-                _radialMenu.SetOptions("Attach Patch", "Toggle G1", "Delete", "Save");
+            {
+                PushMenuPage(PageId.Root);
+            }
             else
-                _radialMenu.SetOptions("Auto", "Point", "Edge", "Surface");
+            {
+                // Right hand: flat single-level tool menu
+                _radialMenu.PushPage(new[] { "Auto", "Point", "Edge", "Surface" });
+            }
         }
 
         // ─── Per-frame ────────────────────────────────────────────────────────────
@@ -194,11 +222,13 @@ namespace SplineSculptor.VR
 
             var pos = _tipSphere != null ? _tipSphere.GlobalPosition : GlobalPosition;
 
-            bool wantHandles  = ActiveTool is SelectionTool.Auto or SelectionTool.Point;
-            bool wantEdges    = ActiveTool == SelectionTool.Edge;
+            bool wantHandles = ActiveTool is SelectionTool.Auto or SelectionTool.Point
+                               || ActiveSelectionMode == SelectionMode.Paint;
+            bool wantEdges   = ActiveTool == SelectionTool.Edge
+                               && ActiveSelectionMode == SelectionMode.None;
 
-            // ── Control-point hover (Point / Auto) ────────────────────────────────
-            IGrabTarget? closest    = null;
+            // ── Control-point hover ───────────────────────────────────────────────
+            IGrabTarget? closest     = null;
             float        closestDist = HoverRadius;
 
             if (wantHandles)
@@ -221,7 +251,7 @@ namespace SplineSculptor.VR
                 if (_hoveredTarget != null) _hoveredTarget.IsHovered = true;
             }
 
-            // ── Edge hover (Edge mode) ────────────────────────────────────────────
+            // ── Edge hover ────────────────────────────────────────────────────────
             SurfaceNode? edgeNode = null;
             SurfaceEdge  edgeEdge = SurfaceEdge.UMin;
             float        edgeDist = HoverRadius;
@@ -258,7 +288,6 @@ namespace SplineSculptor.VR
                 _hoveredEdgeSurfNode?.SetHoveredEdge(edgeEdge);
             }
 
-            // Dim the pointer ray when something is in range
             if (_pointerRay != null)
                 _pointerRay.Visible = (_hoveredTarget == null &&
                                        _hoveredEdgeSurfNode == null &&
@@ -295,6 +324,14 @@ namespace SplineSculptor.VR
 
             var tipPos = _tipSphere != null ? _tipSphere.GlobalPosition : GlobalPosition;
 
+            // Paint-select mode overrides normal grab
+            if (ActiveSelectionMode == SelectionMode.Paint)
+            {
+                HandlePaintSelect(triggerDown, tipPos);
+                _triggerWasDown = triggerDown;
+                return;
+            }
+
             switch (_state)
             {
                 case HandState.Idle:
@@ -310,13 +347,9 @@ namespace SplineSculptor.VR
                             }
                         }
                         else if (ActiveTool == SelectionTool.Edge)
-                        {
                             SelectHoveredEdge();
-                        }
                         else if (ActiveTool == SelectionTool.Surface)
-                        {
                             SelectNearestSurface(tipPos);
-                        }
                     }
                     break;
 
@@ -328,10 +361,8 @@ namespace SplineSculptor.VR
                         _currentTarget?.OnGrabEnd(this);
                         if (_currentTarget is ControlPointHandle cph && Selection != null)
                         {
-                            if (cph.Surface != null)
-                                Selection.SelectSurface(cph.Surface);
-                            if (cph.OwnerPoly != null)
-                                Selection.SelectPolysurface(cph.OwnerPoly);
+                            if (cph.Surface != null)   Selection.SelectSurface(cph.Surface);
+                            if (cph.OwnerPoly != null)  Selection.SelectPolysurface(cph.OwnerPoly);
                         }
                         _currentTarget = null;
                         _state         = HandState.Idle;
@@ -342,6 +373,48 @@ namespace SplineSculptor.VR
             _triggerWasDown = triggerDown;
         }
 
+        // ─── Paint-select ─────────────────────────────────────────────────────────
+
+        private void HandlePaintSelect(bool triggerDown, Vector3 tipPos)
+        {
+            if (triggerDown && !_paintTriggerHeld)
+            {
+                // Stroke start
+                _paintTriggerHeld = true;
+                _paintedThisDrag.Clear();
+
+                if (ActiveSelectionModifier == SelectionModifier.Replace)
+                    Selection?.ClearHandles();
+            }
+            else if (!triggerDown && _paintTriggerHeld)
+            {
+                // Stroke end
+                _paintTriggerHeld = false;
+                _paintedThisDrag.Clear();
+            }
+
+            if (!_paintTriggerHeld || SceneRoot == null) return;
+
+            // Each frame: select/deselect/toggle handles within hover radius of tip
+            foreach (var child in SceneRoot.GetChildren())
+            {
+                if (child is not PolysurfaceNode polyNode) continue;
+                foreach (var handle in polyNode.AllHandles())
+                {
+                    if (_paintedThisDrag.Contains(handle)) continue; // each handle once per stroke
+                    if (tipPos.DistanceTo(handle.GlobalGrabPosition) > HoverRadius) continue;
+
+                    _paintedThisDrag.Add(handle);
+
+                    // Replace was handled at stroke start (clear); now just Add
+                    var mod = ActiveSelectionModifier == SelectionModifier.Replace
+                        ? SelectionModifier.Add
+                        : ActiveSelectionModifier;
+                    Selection?.ModifyHandleSelection(handle, mod);
+                }
+            }
+        }
+
         // ─── Edge selection ───────────────────────────────────────────────────────
 
         private void SelectHoveredEdge()
@@ -350,7 +423,6 @@ namespace SplineSculptor.VR
             var polyNode = _hoveredEdgeSurfNode.GetParent() as PolysurfaceNode;
             if (polyNode?.Data == null || _hoveredEdgeSurfNode.Surface == null) return;
 
-            // Clear previous VR-selected edge visual
             _selectedEdgeSurfNode?.SetSelectedEdge(null);
             _selectedEdgeSurfNode = _hoveredEdgeSurfNode;
             _selectedEdgeValue    = _hoveredEdge;
@@ -378,7 +450,6 @@ namespace SplineSculptor.VR
                 if (child is not PolysurfaceNode polyNode) continue;
                 foreach (var surfNode in polyNode.AllSurfaceNodes())
                 {
-                    // Use edge boundary points as a proximity proxy for the surface
                     foreach (var edge in AllEdges)
                     {
                         int count = surfNode.GetEdgePointCount(edge);
@@ -392,7 +463,6 @@ namespace SplineSculptor.VR
             }
 
             if (bestSurf?.Surface == null || bestPoly?.Data == null) return;
-
             Selection?.SelectSurface(bestSurf.Surface);
             Selection?.SelectPolysurface(bestPoly.Data);
             GD.Print($"[VR Select] Surface in '{bestPoly.Data.Name}'");
@@ -404,63 +474,149 @@ namespace SplineSculptor.VR
         {
             if (menuDown && !_menuWasDown)
             {
-                if (IsLeft) OnUndo?.Invoke();
-                else        OnRedo?.Invoke();
+                if (IsLeft)
+                {
+                    if (_radialMenu != null && !_radialMenu.IsAtRoot)
+                    {
+                        bool wasModifier = CurrentPage == PageId.Modifier;
+                        _pageIds.Pop();
+                        _radialMenu.PopPage();
+
+                        if (wasModifier)
+                        {
+                            ActiveSelectionMode     = SelectionMode.None;
+                            ActiveSelectionModifier = SelectionModifier.Replace;
+                            _paintTriggerHeld       = false;
+                            _paintedThisDrag.Clear();
+                            GD.Print("[VR] Exited selection mode.");
+                        }
+                    }
+                    else
+                    {
+                        OnUndo?.Invoke();
+                    }
+                }
+                else
+                {
+                    OnRedo?.Invoke();
+                }
             }
             _menuWasDown = menuDown;
         }
 
-        // ─── Trackpad radial menu ─────────────────────────────────────────────────
+        // ─── Trackpad / radial menu ───────────────────────────────────────────────
 
         private void HandlePrimaryPad(bool touchDown, bool primaryDown, Vector2 padVec)
         {
-            bool shouldShow = touchDown || primaryDown;
+            int sector = GetSector(padVec);
 
-            if (shouldShow && !_menuShowing)
+            // ── Modifier page (left hand, paint/hull mode active) ─────────────────
+            if (IsLeft && CurrentPage == PageId.Modifier)
+            {
+                // Update the active modifier while click is held; reset when released
+                ActiveSelectionModifier = (primaryDown && sector >= 0) ? sector switch
+                {
+                    0 => SelectionModifier.XOR,
+                    1 => SelectionModifier.Add,
+                    2 => SelectionModifier.Replace,
+                    3 => SelectionModifier.Remove,
+                    _ => SelectionModifier.Replace,
+                } : SelectionModifier.Replace;
+
+                // Show/hide menu on touch; highlight held direction
+                bool shouldShow = touchDown || primaryDown;
+                if (shouldShow && !_menuShowing)
+                {
+                    _menuShowing = true;
+                    _radialMenu!.ResetHighlight();
+                    _radialMenu.Visible = true;
+                }
+                else if (!shouldShow && _menuShowing)
+                {
+                    _menuShowing = false;
+                    _radialMenu!.Visible = false;
+                }
+                if (_menuShowing && _radialMenu != null)
+                    _radialMenu.UpdateHighlight(primaryDown ? sector : -1);
+
+                _primaryWasDown = primaryDown;
+                return;
+            }
+
+            // ── Normal menu behaviour ─────────────────────────────────────────────
+            bool menuShouldShow = touchDown || primaryDown;
+            if (menuShouldShow && !_menuShowing)
             {
                 _menuShowing = true;
-                if (_radialMenu != null) { _radialMenu.ResetHighlight(); _radialMenu.Visible = true; }
+                _radialMenu?.ResetHighlight();
+                if (_radialMenu != null) _radialMenu.Visible = true;
             }
-            else if (!shouldShow && _menuShowing)
+            else if (!menuShouldShow && _menuShowing)
             {
                 _menuShowing = false;
                 if (_radialMenu != null) _radialMenu.Visible = false;
             }
 
             if (_menuShowing && _radialMenu != null)
-                _radialMenu.UpdateHighlight(GetSector(padVec));
+                _radialMenu.UpdateHighlight(sector);
 
-            if (_menuShowing && !primaryDown && _primaryWasDown)
-            {
-                int sector = GetSector(padVec);
-                if (sector >= 0) ExecuteSector(sector);
-            }
+            // Click released while menu was showing → execute sector
+            if (_menuShowing && !primaryDown && _primaryWasDown && sector >= 0)
+                ExecuteSector(sector);
 
             _primaryWasDown = primaryDown;
         }
 
-        private static int GetSector(Vector2 v)
-        {
-            if (v.Length() < 0.40f) return -1;
-            return Mathf.Abs(v.Y) >= Mathf.Abs(v.X)
-                ? (v.Y > 0 ? 0 : 2)
-                : (v.X > 0 ? 1 : 3);
-        }
+        // ─── Sector execution ─────────────────────────────────────────────────────
 
         private void ExecuteSector(int sector)
         {
+            if (!(_radialMenu?.IsSelectable(sector) ?? false)) return;
+
             if (IsLeft)
             {
-                switch (sector)
+                switch (CurrentPage)
                 {
-                    case 0: OnSpawnAttach?.Invoke(); break;
-                    case 1: OnToggleG1?.Invoke();    break;
-                    case 2: OnDelete?.Invoke();      break;
-                    case 3: OnSave?.Invoke();        break;
+                    case PageId.Root:
+                        switch (sector)
+                        {
+                            case 0: PushMenuPage(PageId.Select); break; // Select →
+                            case 1: PushMenuPage(PageId.Modify); break; // Modify →
+                            case 2: PushMenuPage(PageId.File);   break; // File →
+                        }
+                        break;
+
+                    case PageId.Select:
+                        if (sector == 0) // Paint Select
+                        {
+                            ActiveSelectionMode = SelectionMode.Paint;
+                            PushMenuPage(PageId.Modifier);
+                            GD.Print("[VR] Paint Select mode active. Hold left trackpad direction to set modifier.");
+                        }
+                        // sector 1 = Hull: disabled — IsSelectable returns false
+                        break;
+
+                    case PageId.Modifier:
+                        // No click actions here; modifier is set by held-click in HandlePrimaryPad
+                        break;
+
+                    case PageId.Modify:
+                        switch (sector)
+                        {
+                            case 0: OnSpawnAttach?.Invoke(); break;
+                            case 1: OnToggleG1?.Invoke();    break;
+                            case 2: OnDelete?.Invoke();      break;
+                        }
+                        break;
+
+                    case PageId.File:
+                        if (sector == 0) OnSave?.Invoke();
+                        break;
                 }
             }
             else
             {
+                // Right hand: tool selection
                 ActiveTool = sector switch
                 {
                     0 => SelectionTool.Auto,
@@ -471,6 +627,55 @@ namespace SplineSculptor.VR
                 };
                 GD.Print($"[VR Tool] {ActiveTool}");
             }
+        }
+
+        // ─── Menu page definitions ────────────────────────────────────────────────
+
+        private void PushMenuPage(PageId page)
+        {
+            _pageIds.Push(page);
+            switch (page)
+            {
+                case PageId.Root:
+                    _radialMenu!.PushPage(
+                        new[] { "Select", "Modify", "File", "" },
+                        isSubmenu:  new[] { true,  true,  true,  false },
+                        isDisabled: new[] { false, false, false, true  });
+                    break;
+
+                case PageId.Select:
+                    _radialMenu!.PushPage(
+                        new[] { "Paint Select", "Hull Select", "", "" },
+                        isDisabled: new[] { false, true, true, true });
+                    break;
+
+                case PageId.Modifier:
+                    _radialMenu!.PushPage(
+                        new[] { "XOR", "Add", "Replace", "Remove" });
+                    break;
+
+                case PageId.Modify:
+                    _radialMenu!.PushPage(
+                        new[] { "Attach", "Toggle G1", "Delete", "" },
+                        isDisabled: new[] { false, false, false, true });
+                    break;
+
+                case PageId.File:
+                    _radialMenu!.PushPage(
+                        new[] { "Save", "", "", "" },
+                        isDisabled: new[] { false, true, true, true });
+                    break;
+            }
+        }
+
+        // ─── Sector helper ────────────────────────────────────────────────────────
+
+        private static int GetSector(Vector2 v)
+        {
+            if (v.Length() < 0.40f) return -1;
+            return Mathf.Abs(v.Y) >= Mathf.Abs(v.X)
+                ? (v.Y > 0 ? 0 : 2)
+                : (v.X > 0 ? 1 : 3);
         }
 
         // ─── Point-to-segment distance ────────────────────────────────────────────
