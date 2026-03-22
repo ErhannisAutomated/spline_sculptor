@@ -456,23 +456,18 @@ namespace SplineSculptor.VR
 
         private void ApplyHullSelection()
         {
-            if (_hullPath.Count < 2 || SceneRoot == null) return;
-
-            var camera = GetViewport().GetCamera3D();
-            if (camera == null) return;
-
-            // Project recorded 3D path into 2D screen space
-            var screenPath = new List<Vector2>();
-            foreach (var pt in _hullPath)
+            if (_hullPath.Count < 4 || SceneRoot == null)
             {
-                if (camera.IsPositionInFrustum(pt))
-                    screenPath.Add(camera.UnprojectPosition(pt));
+                GD.Print("[VR Hull] Need at least 4 path points — trace a wider 3D path.");
+                return;
             }
 
-            if (screenPath.Count < 2) return;
-
-            var hull = ComputeConvexHull(screenPath);
-            if (hull.Count < 3) return;
+            var hull = Build3DConvexHull(_hullPath);
+            if (hull == null)
+            {
+                GD.Print("[VR Hull] Path is too flat or collinear to form a 3D hull.");
+                return;
+            }
 
             if (ActiveSelectionModifier == SelectionModifier.Replace)
                 Selection?.ClearHandles();
@@ -481,71 +476,139 @@ namespace SplineSculptor.VR
                 ? SelectionModifier.Add
                 : ActiveSelectionModifier;
 
+            int count = 0;
             foreach (var child in SceneRoot.GetChildren())
             {
                 if (child is not PolysurfaceNode polyNode) continue;
                 foreach (var handle in polyNode.AllHandles())
                 {
-                    if (!camera.IsPositionInFrustum(handle.GlobalPosition)) continue;
-                    if (IsPointInPolygon(camera.UnprojectPosition(handle.GlobalPosition), hull))
-                        Selection?.ModifyHandleSelection(handle, mod);
+                    if (!IsInsideConvexHull(hull, handle.GlobalPosition)) continue;
+                    Selection?.ModifyHandleSelection(handle, mod);
+                    count++;
                 }
             }
 
-            GD.Print($"[VR Hull] {_hullPath.Count} path pts → {hull.Count}-pt hull applied.");
+            GD.Print($"[VR Hull] {_hullPath.Count} path pts → {hull.Count}-face hull → {count} handles.");
         }
 
-        /// <summary>Graham-scan convex hull of a 2-D point set (screen space).</summary>
-        private static List<Vector2> ComputeConvexHull(List<Vector2> points)
+        // ─── 3-D convex hull (incremental / gift-wrapping) ────────────────────────
+
+        /// <summary>
+        /// Build the 3-D convex hull of <paramref name="pts"/> using an incremental algorithm.
+        /// Returns a list of outward-facing triangular faces, or null if the points are
+        /// degenerate (collinear, coplanar, or fewer than 4 distinct positions).
+        /// </summary>
+        private static List<HullFace>? Build3DConvexHull(List<Vector3> pts)
         {
-            if (points.Count < 3) return new List<Vector2>(points);
+            if (pts.Count < 4) return null;
 
-            // Find bottom-most (then left-most) point as pivot
-            var pivot = points[0];
-            foreach (var p in points)
-                if (p.Y < pivot.Y || (p.Y == pivot.Y && p.X < pivot.X))
-                    pivot = p;
-
-            // Sort by polar angle around pivot; break ties by distance
-            var sorted = new List<Vector2>(points);
-            sorted.Sort((a, b) =>
+            // ── Find initial tetrahedron ──────────────────────────────────────────
+            // Extremal pair along X
+            int ia = 0, ib = 0;
+            float minX = float.MaxValue, maxX = float.MinValue;
+            for (int i = 0; i < pts.Count; i++)
             {
-                if (a == pivot) return -1;
-                if (b == pivot) return  1;
-                var da = a - pivot;
-                var db = b - pivot;
-                float angA = Mathf.Atan2(da.Y, da.X);
-                float angB = Mathf.Atan2(db.Y, db.X);
-                int cmp = angA.CompareTo(angB);
-                return cmp != 0 ? cmp : da.LengthSquared().CompareTo(db.LengthSquared());
-            });
-
-            var hull = new List<Vector2>();
-            foreach (var p in sorted)
-            {
-                while (hull.Count >= 2 && Cross2D(hull[^2], hull[^1], p) <= 0)
-                    hull.RemoveAt(hull.Count - 1);
-                hull.Add(p);
+                if (pts[i].X < minX) { minX = pts[i].X; ia = i; }
+                if (pts[i].X > maxX) { maxX = pts[i].X; ib = i; }
             }
-            return hull;
+            if (ia == ib) return null;
+
+            // Furthest point from the ia–ib line
+            var axisAB = (pts[ib] - pts[ia]).Normalized();
+            int ic = -1; float maxLineDist = 0f;
+            for (int i = 0; i < pts.Count; i++)
+            {
+                if (i == ia || i == ib) continue;
+                var v = pts[i] - pts[ia];
+                float d = (v - axisAB * v.Dot(axisAB)).Length();
+                if (d > maxLineDist) { maxLineDist = d; ic = i; }
+            }
+            if (ic < 0 || maxLineDist < 1e-6f) return null;
+
+            // Furthest point from the ia–ib–ic plane
+            var triNorm = (pts[ib] - pts[ia]).Cross(pts[ic] - pts[ia]);
+            if (triNorm.LengthSquared() < 1e-12f) return null;
+            triNorm = triNorm.Normalized();
+            int id = -1; float maxPlaneDist = 0f;
+            for (int i = 0; i < pts.Count; i++)
+            {
+                if (i == ia || i == ib || i == ic) continue;
+                float d = Mathf.Abs((pts[i] - pts[ia]).Dot(triNorm));
+                if (d > maxPlaneDist) { maxPlaneDist = d; id = i; }
+            }
+            if (id < 0 || maxPlaneDist < 1e-6f) return null;
+
+            // ── Build initial tetrahedron ─────────────────────────────────────────
+            var centroid = (pts[ia] + pts[ib] + pts[ic] + pts[id]) * 0.25f;
+            var faces    = new List<HullFace>();
+
+            // Adds a face (a,b,c) with outward normal (flipping winding if necessary).
+            void MakeFace(int a, int b, int c)
+            {
+                var n = (pts[b] - pts[a]).Cross(pts[c] - pts[a]);
+                if (n.LengthSquared() < 1e-12f) return;
+                n = n.Normalized();
+                if (n.Dot(pts[a] - centroid) < 0) { n = -n; (b, c) = (c, b); }
+                faces.Add(new HullFace(a, b, c, n, n.Dot(pts[a])));
+            }
+
+            MakeFace(ia, ib, ic);
+            MakeFace(ia, ib, id);
+            MakeFace(ia, ic, id);
+            MakeFace(ib, ic, id);
+
+            // ── Incremental expansion ─────────────────────────────────────────────
+            for (int i = 0; i < pts.Count; i++)
+            {
+                if (i == ia || i == ib || i == ic || i == id) continue;
+                var p = pts[i];
+
+                // Collect faces visible from p
+                var visIdx = new List<int>();
+                for (int fi = 0; fi < faces.Count; fi++)
+                    if (faces[fi].Normal.Dot(p) - faces[fi].Offset > 1e-6f)
+                        visIdx.Add(fi);
+
+                if (visIdx.Count == 0) continue; // p is already inside
+
+                // Count how many visible faces share each edge
+                var edgeUse = new Dictionary<(int, int), int>();
+                foreach (int fi in visIdx)
+                {
+                    void Count(int a, int b)
+                    {
+                        var key = a < b ? (a, b) : (b, a);
+                        edgeUse[key] = edgeUse.GetValueOrDefault(key) + 1;
+                    }
+                    Count(faces[fi].A, faces[fi].B);
+                    Count(faces[fi].B, faces[fi].C);
+                    Count(faces[fi].C, faces[fi].A);
+                }
+
+                // Remove visible faces (reverse order so indices stay valid)
+                for (int k = visIdx.Count - 1; k >= 0; k--)
+                    faces.RemoveAt(visIdx[k]);
+
+                // Stitch new faces from horizon edges (count == 1) to p
+                foreach (var (edge, use) in edgeUse)
+                {
+                    if (use != 1) continue;
+                    MakeFace(edge.Item1, edge.Item2, i);
+                }
+            }
+
+            return faces.Count > 0 ? faces : null;
         }
 
-        private static float Cross2D(Vector2 o, Vector2 a, Vector2 b) =>
-            (a.X - o.X) * (b.Y - o.Y) - (a.Y - o.Y) * (b.X - o.X);
-
-        private static bool IsPointInPolygon(Vector2 point, List<Vector2> polygon)
+        /// <summary>
+        /// Returns true if <paramref name="p"/> is inside (or on the boundary of) the
+        /// convex hull represented as a list of outward-facing triangular faces.
+        /// </summary>
+        private static bool IsInsideConvexHull(List<HullFace> hull, Vector3 p, float eps = 1e-4f)
         {
-            int  n      = polygon.Count;
-            bool inside = false;
-            for (int i = 0, j = n - 1; i < n; j = i++)
-            {
-                var pi = polygon[i];
-                var pj = polygon[j];
-                if ((pi.Y > point.Y) != (pj.Y > point.Y) &&
-                    point.X < (pj.X - pi.X) * (point.Y - pi.Y) / (pj.Y - pi.Y) + pi.X)
-                    inside = !inside;
-            }
-            return inside;
+            foreach (var f in hull)
+                if (f.Normal.Dot(p) - f.Offset > eps) return false;
+            return true;
         }
 
         // ─── Edge selection ───────────────────────────────────────────────────────
@@ -827,6 +890,20 @@ namespace SplineSculptor.VR
             if (len2 < 1e-10f) return p.DistanceTo(a);
             float t = Mathf.Clamp((p - a).Dot(ab) / len2, 0f, 1f);
             return p.DistanceTo(a + t * ab);
+        }
+
+        // ─── Hull face (used by Build3DConvexHull / IsInsideConvexHull) ───────────
+
+        private readonly struct HullFace
+        {
+            public readonly int     A, B, C;   // indices into the original point list
+            public readonly Vector3 Normal;    // outward-pointing unit normal
+            public readonly float   Offset;    // Normal · any_vertex_on_face
+
+            public HullFace(int a, int b, int c, Vector3 normal, float offset)
+            {
+                A = a; B = b; C = c; Normal = normal; Offset = offset;
+            }
         }
     }
 }
