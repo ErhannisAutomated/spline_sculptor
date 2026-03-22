@@ -116,15 +116,43 @@ namespace SplineSculptor.Model
 
         // ─── Constraint enforcement ───────────────────────────────────────────────
 
+        /// <summary>Maximum number of propagation passes when enforcing constraints.</summary>
+        public const int MaxConstraintPasses = 3;
+
         /// <summary>
-        /// Enforce all constraints that touch the given surface (post-move pass).
+        /// Enforce all constraints that touch the given surface, then propagate outward
+        /// up to MaxConstraintPasses hops so that multi-surface chains (e.g. shared
+        /// corners across four patches) stay consistent.
         /// </summary>
         public void EnforceConstraints(SculptSurface movedSurface)
         {
-            foreach (var c in Constraints)
+            // dirty = the set of surfaces whose CPs changed in the current pass.
+            // We propagate away from dirty surfaces; we never propagate back into
+            // a surface that is already in dirty (avoids oscillation in cycles).
+            var dirty = new HashSet<SculptSurface> { movedSurface };
+
+            for (int pass = 0; pass < MaxConstraintPasses; pass++)
             {
-                if (c.SurfaceA == movedSurface || c.SurfaceB == movedSurface)
-                    c.Enforce(movedSurface);
+                var nextDirty = new HashSet<SculptSurface>();
+                foreach (var c in Constraints)
+                {
+                    SculptSurface? src = null;
+                    if (dirty.Contains(c.SurfaceA))       src = c.SurfaceA;
+                    else if (dirty.Contains(c.SurfaceB))  src = c.SurfaceB;
+
+                    if (src != null)
+                    {
+                        var dst = src == c.SurfaceA ? c.SurfaceB : c.SurfaceA;
+                        if (!dirty.Contains(dst))
+                        {
+                            c.Enforce(src);
+                            nextDirty.Add(dst);
+                        }
+                    }
+                }
+
+                if (nextDirty.Count == 0) break;
+                dirty = nextDirty;
             }
         }
 
