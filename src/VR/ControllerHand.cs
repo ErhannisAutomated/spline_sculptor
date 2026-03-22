@@ -116,6 +116,12 @@ namespace SplineSculptor.VR
         private readonly HashSet<ControlPointHandle> _paintedThisDrag = new();
         private bool _paintTriggerHeld = false;
 
+        // Hull-select state (right hand)
+        private readonly List<Vector3> _hullPath         = new();
+        private bool    _hullTriggerHeld  = false;
+        private Vector3 _hullLastPos      = Vector3.Zero;
+        private const float HullRecordMinDist = 0.02f; // minimum tip movement (metres) before recording
+
         // ─── Lifecycle ────────────────────────────────────────────────────────────
 
         public override void _Ready()
@@ -324,10 +330,16 @@ namespace SplineSculptor.VR
 
             var tipPos = _tipSphere != null ? _tipSphere.GlobalPosition : GlobalPosition;
 
-            // Paint-select mode overrides normal grab
+            // Selection modes override normal grab
             if (ActiveSelectionMode == SelectionMode.Paint)
             {
                 HandlePaintSelect(triggerDown, tipPos);
+                _triggerWasDown = triggerDown;
+                return;
+            }
+            if (ActiveSelectionMode == SelectionMode.Hull)
+            {
+                HandleHullSelect(triggerDown, tipPos);
                 _triggerWasDown = triggerDown;
                 return;
             }
@@ -415,6 +427,127 @@ namespace SplineSculptor.VR
             }
         }
 
+        // ─── Hull-select ──────────────────────────────────────────────────────────
+
+        private void HandleHullSelect(bool triggerDown, Vector3 tipPos)
+        {
+            if (triggerDown && !_hullTriggerHeld)
+            {
+                _hullTriggerHeld = true;
+                _hullPath.Clear();
+                _hullPath.Add(tipPos);
+                _hullLastPos = tipPos;
+            }
+            else if (!triggerDown && _hullTriggerHeld)
+            {
+                _hullTriggerHeld = false;
+                ApplyHullSelection();
+                _hullPath.Clear();
+            }
+
+            if (!_hullTriggerHeld) return;
+
+            if (tipPos.DistanceTo(_hullLastPos) >= HullRecordMinDist)
+            {
+                _hullPath.Add(tipPos);
+                _hullLastPos = tipPos;
+            }
+        }
+
+        private void ApplyHullSelection()
+        {
+            if (_hullPath.Count < 2 || SceneRoot == null) return;
+
+            var camera = GetViewport().GetCamera3D();
+            if (camera == null) return;
+
+            // Project recorded 3D path into 2D screen space
+            var screenPath = new List<Vector2>();
+            foreach (var pt in _hullPath)
+            {
+                if (camera.IsPositionInFrustum(pt))
+                    screenPath.Add(camera.UnprojectPosition(pt));
+            }
+
+            if (screenPath.Count < 2) return;
+
+            var hull = ComputeConvexHull(screenPath);
+            if (hull.Count < 3) return;
+
+            if (ActiveSelectionModifier == SelectionModifier.Replace)
+                Selection?.ClearHandles();
+
+            var mod = ActiveSelectionModifier == SelectionModifier.Replace
+                ? SelectionModifier.Add
+                : ActiveSelectionModifier;
+
+            foreach (var child in SceneRoot.GetChildren())
+            {
+                if (child is not PolysurfaceNode polyNode) continue;
+                foreach (var handle in polyNode.AllHandles())
+                {
+                    if (!camera.IsPositionInFrustum(handle.GlobalPosition)) continue;
+                    if (IsPointInPolygon(camera.UnprojectPosition(handle.GlobalPosition), hull))
+                        Selection?.ModifyHandleSelection(handle, mod);
+                }
+            }
+
+            GD.Print($"[VR Hull] {_hullPath.Count} path pts → {hull.Count}-pt hull applied.");
+        }
+
+        /// <summary>Graham-scan convex hull of a 2-D point set (screen space).</summary>
+        private static List<Vector2> ComputeConvexHull(List<Vector2> points)
+        {
+            if (points.Count < 3) return new List<Vector2>(points);
+
+            // Find bottom-most (then left-most) point as pivot
+            var pivot = points[0];
+            foreach (var p in points)
+                if (p.Y < pivot.Y || (p.Y == pivot.Y && p.X < pivot.X))
+                    pivot = p;
+
+            // Sort by polar angle around pivot; break ties by distance
+            var sorted = new List<Vector2>(points);
+            sorted.Sort((a, b) =>
+            {
+                if (a == pivot) return -1;
+                if (b == pivot) return  1;
+                var da = a - pivot;
+                var db = b - pivot;
+                float angA = Mathf.Atan2(da.Y, da.X);
+                float angB = Mathf.Atan2(db.Y, db.X);
+                int cmp = angA.CompareTo(angB);
+                return cmp != 0 ? cmp : da.LengthSquared().CompareTo(db.LengthSquared());
+            });
+
+            var hull = new List<Vector2>();
+            foreach (var p in sorted)
+            {
+                while (hull.Count >= 2 && Cross2D(hull[^2], hull[^1], p) <= 0)
+                    hull.RemoveAt(hull.Count - 1);
+                hull.Add(p);
+            }
+            return hull;
+        }
+
+        private static float Cross2D(Vector2 o, Vector2 a, Vector2 b) =>
+            (a.X - o.X) * (b.Y - o.Y) - (a.Y - o.Y) * (b.X - o.X);
+
+        private static bool IsPointInPolygon(Vector2 point, List<Vector2> polygon)
+        {
+            int  n      = polygon.Count;
+            bool inside = false;
+            for (int i = 0, j = n - 1; i < n; j = i++)
+            {
+                var pi = polygon[i];
+                var pj = polygon[j];
+                if ((pi.Y > point.Y) != (pj.Y > point.Y) &&
+                    point.X < (pj.X - pi.X) * (point.Y - pi.Y) / (pj.Y - pi.Y) + pi.X)
+                    inside = !inside;
+            }
+            return inside;
+        }
+
         // ─── Edge selection ───────────────────────────────────────────────────────
 
         private void SelectHoveredEdge()
@@ -488,6 +621,8 @@ namespace SplineSculptor.VR
                             ActiveSelectionModifier = SelectionModifier.Replace;
                             _paintTriggerHeld       = false;
                             _paintedThisDrag.Clear();
+                            _hullTriggerHeld        = false;
+                            _hullPath.Clear();
                             GD.Print("[VR] Exited selection mode.");
                         }
                     }
@@ -591,9 +726,14 @@ namespace SplineSculptor.VR
                         {
                             ActiveSelectionMode = SelectionMode.Paint;
                             PushMenuPage(PageId.Modifier);
-                            GD.Print("[VR] Paint Select mode active. Hold left trackpad direction to set modifier.");
+                            GD.Print("[VR] Paint Select: sweep trigger near handles. Hold left pad dir for modifier.");
                         }
-                        // sector 1 = Hull: disabled — IsSelectable returns false
+                        else if (sector == 1) // Hull Select
+                        {
+                            ActiveSelectionMode = SelectionMode.Hull;
+                            PushMenuPage(PageId.Modifier);
+                            GD.Print("[VR] Hull Select: trace a path with trigger; release to select inside hull.");
+                        }
                         break;
 
                     case PageId.Modifier:
@@ -646,7 +786,7 @@ namespace SplineSculptor.VR
                 case PageId.Select:
                     _radialMenu!.PushPage(
                         new[] { "Paint Select", "Hull Select", "", "" },
-                        isDisabled: new[] { false, true, true, true });
+                        isDisabled: new[] { false, false, true, true });
                     break;
 
                 case PageId.Modifier:
