@@ -133,6 +133,7 @@ namespace SplineSculptor.VR
 			leftHand.OnSpawnAttach = AttachOrSpawn;
 			leftHand.OnToggleG1    = ToggleEdgeConstraint;
 			leftHand.OnDelete      = DeleteSelected;
+			leftHand.OnSubdivide   = SubdivideSurface;
 			leftHand.OnSave        = SaveScene;
 
 			// Right hand — sculpt
@@ -274,6 +275,8 @@ namespace SplineSculptor.VR
 				AttachToSelected(SurfaceEdge.VMax);
 			else if (!ctrl && key.Keycode == Key.G)
 				ToggleEdgeConstraint();
+			else if (!ctrl && key.Keycode == Key.D)
+				SubdivideSurface();
 			else if (!ctrl && key.Keycode == Key.Delete)
 				DeleteSelected();
 			else if ((ctrl && key.Keycode == Key.S) || key.Keycode == Key.F2)
@@ -367,6 +370,20 @@ namespace SplineSculptor.VR
 			var cmd = new DeleteSurfaceCommand(poly, surf);
 			_scene.UndoStack.Execute(cmd);
 			GD.Print($"[VRManager] Deleted surface from '{poly.Name}'.");
+		}
+
+		private void SubdivideSurface()
+		{
+			bool any = false;
+			foreach (var s in _selection.SelectedSurfaces)
+			{
+				var cmd = new SubdivideCommand(s);
+				_scene.UndoStack.Execute(cmd);
+				GD.Print($"[Subdivide] Surface now {s.Geometry.CpCountU}×{s.Geometry.CpCountV} CPs.");
+				any = true;
+			}
+			if (!any)
+				GD.Print("[Subdivide] No surface selected.");
 		}
 
 		private SculptSurface? GetSelectedSurface(out Polysurface? poly)

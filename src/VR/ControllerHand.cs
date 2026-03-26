@@ -67,6 +67,7 @@ namespace SplineSculptor.VR
         public Action? OnSpawnAttach { get; set; }
         public Action? OnToggleG1    { get; set; }
         public Action? OnDelete      { get; set; }
+        public Action? OnSubdivide   { get; set; }
         public Action? OnSave        { get; set; }
 
         // ─── Shared static state ──────────────────────────────────────────────────
@@ -1023,6 +1024,7 @@ namespace SplineSculptor.VR
                             case 0: OnSpawnAttach?.Invoke(); break;
                             case 1: OnToggleG1?.Invoke();    break;
                             case 2: OnDelete?.Invoke();      break;
+                            case 3: OnSubdivide?.Invoke();   break;
                         }
                         break;
 
@@ -1073,8 +1075,7 @@ namespace SplineSculptor.VR
 
                 case PageId.Modify:
                     _radialMenu!.PushPage(
-                        new[] { "Attach", "Toggle G1", "Delete", "" },
-                        isDisabled: new[] { false, false, false, true });
+                        new[] { "Attach", "Toggle G1", "Delete", "Subdivide" });
                     break;
 
                 case PageId.File:
