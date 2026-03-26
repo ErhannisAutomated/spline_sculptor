@@ -242,7 +242,10 @@ namespace SplineSculptor.VR
             if (IsLeft)
             {
                 // Update the static flag AFTER HandleInput so any page changes are reflected.
-                bool inSel = CurrentPage == PageId.Select || CurrentPage == PageId.Modifier;
+                // Only suppress world transform when there are handles to actually transform;
+                // with nothing selected, grips should navigate the world as normal.
+                bool inSel = (CurrentPage == PageId.Select || CurrentPage == PageId.Modifier)
+                             && Selection != null && Selection.SelectedHandles.Count > 0;
                 IsInSelectionMenu = inSel;
 
                 if (inSel)

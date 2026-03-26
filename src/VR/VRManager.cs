@@ -127,6 +127,7 @@ namespace SplineSculptor.VR
 			var leftHand = new ControllerHand { Name = "LeftHand", IsLeft = true };
 			_leftCtrl.AddChild(leftHand);
 			leftHand.SceneRoot = _sceneRoot!;
+			leftHand.Selection = _selection;
 			leftHand.OnUndo        = () => { GD.Print($"[Undo] {_scene.UndoStack.UndoDescription ?? "(nothing)"}"); _scene.UndoStack.Undo(); };
 			leftHand.OnRedo        = () => { GD.Print($"[Redo] {_scene.UndoStack.RedoDescription ?? "(nothing)"}"); _scene.UndoStack.Redo(); };
 			leftHand.OnSpawnAttach = AttachOrSpawn;
