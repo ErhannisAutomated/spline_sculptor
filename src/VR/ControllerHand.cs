@@ -142,6 +142,9 @@ namespace SplineSculptor.VR
         private Basis        _prevSelGripBasis;     // prev-frame grip basis (two-grip)
         private float        _prevSelSpan;          // prev-frame hand separation (two-grip)
 
+        // World-override: set while "World" sector is click-held on Modifier page
+        private bool _worldOverride = false;
+
         // ─── Lifecycle ────────────────────────────────────────────────────────────
 
         public override void _Ready()
@@ -242,10 +245,11 @@ namespace SplineSculptor.VR
             if (IsLeft)
             {
                 // Update the static flag AFTER HandleInput so any page changes are reflected.
-                // Only suppress world transform when there are handles to actually transform;
-                // with nothing selected, grips should navigate the world as normal.
+                // Only suppress world transform when there are handles to actually transform
+                // and the user isn't holding the "World" override on the Modifier page.
                 bool inSel = (CurrentPage == PageId.Select || CurrentPage == PageId.Modifier)
-                             && Selection != null && Selection.SelectedHandles.Count > 0;
+                             && Selection != null && Selection.SelectedHandles.Count > 0
+                             && !_worldOverride;
                 IsInSelectionMenu = inSel;
 
                 if (inSel)
@@ -888,6 +892,7 @@ namespace SplineSculptor.VR
                         {
                             ActiveSelectionMode     = SelectionMode.None;
                             ActiveSelectionModifier = SelectionModifier.Replace;
+                            _worldOverride          = false;
                             _paintTriggerHeld       = false;
                             _paintedThisDrag.Clear();
                             _hullTriggerHeld        = false;
@@ -918,12 +923,14 @@ namespace SplineSculptor.VR
             // ── Modifier page (left hand, paint/hull mode active) ─────────────────
             if (IsLeft && CurrentPage == PageId.Modifier)
             {
-                // Update the active modifier while click is held; reset when released
-                ActiveSelectionModifier = (primaryDown && sector >= 0) ? sector switch
+                // Sector 2 = "World": hold to navigate the world instead of transforming selection.
+                _worldOverride = primaryDown && sector == 2;
+
+                // Update the active modifier while click is held; sector 2 is World (not a modifier).
+                ActiveSelectionModifier = (primaryDown && sector >= 0 && sector != 2) ? sector switch
                 {
                     0 => SelectionModifier.XOR,
                     1 => SelectionModifier.Add,
-                    2 => SelectionModifier.Replace,
                     3 => SelectionModifier.Remove,
                     _ => SelectionModifier.Replace,
                 } : SelectionModifier.Replace;
@@ -1061,7 +1068,7 @@ namespace SplineSculptor.VR
 
                 case PageId.Modifier:
                     _radialMenu!.PushPage(
-                        new[] { "XOR", "Add", "Replace", "Remove" });
+                        new[] { "XOR", "Add", "World", "Remove" });
                     break;
 
                 case PageId.Modify:
