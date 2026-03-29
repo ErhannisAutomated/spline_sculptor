@@ -28,7 +28,7 @@ namespace SplineSculptor.Rendering
         private bool _isSelected     = false;
 
         private SurfaceEdge? _hoveredEdge;
-        private SurfaceEdge? _selectedEdge;
+        private readonly HashSet<SurfaceEdge> _selectedEdges = new();
 
         // Cached boundary polylines in local space, extracted each full-res rebuild.
         private readonly Dictionary<SurfaceEdge, Vector3[]> _edgeLocalPoints = new();
@@ -88,11 +88,20 @@ void fragment() {
             UpdateEdgeHighlight();
         }
 
-        /// <summary>Called by DesktopInteraction when an edge is clicked to select it.</summary>
-        public void SetSelectedEdge(SurfaceEdge? edge)
+        public void AddSelectedEdge(SurfaceEdge edge)
         {
-            if (_selectedEdge == edge) return;
-            _selectedEdge = edge;
+            if (_selectedEdges.Add(edge)) UpdateEdgeHighlight();
+        }
+
+        public void RemoveSelectedEdge(SurfaceEdge edge)
+        {
+            if (_selectedEdges.Remove(edge)) UpdateEdgeHighlight();
+        }
+
+        public void ClearSelectedEdges()
+        {
+            if (_selectedEdges.Count == 0) return;
+            _selectedEdges.Clear();
             UpdateEdgeHighlight();
         }
 
@@ -226,40 +235,63 @@ void fragment() {
         {
             if (_edgeHighlightMesh == null) return;
 
-            // Selected edge takes visual priority over hovered edge
-            SurfaceEdge? show = _selectedEdge ?? _hoveredEdge;
-            if (show == null || !_edgeLocalPoints.TryGetValue(show.Value, out var pts) || pts.Length < 2)
+            var mesh = new ArrayMesh();
+
+            // Selected edges — green
+            var selVerts = new List<Vector3>();
+            var selIdxs  = new List<int>();
+            foreach (var edge in _selectedEdges)
+            {
+                if (!_edgeLocalPoints.TryGetValue(edge, out var pts) || pts.Length < 2) continue;
+                int offset = selVerts.Count;
+                selVerts.AddRange(pts);
+                for (int i = 0; i < pts.Length - 1; i++)
+                { selIdxs.Add(offset + i); selIdxs.Add(offset + i + 1); }
+            }
+            if (selVerts.Count > 0)
+            {
+                var arrays = new Godot.Collections.Array();
+                arrays.Resize((int)Mesh.ArrayType.Max);
+                arrays[(int)Mesh.ArrayType.Vertex] = selVerts.ToArray();
+                arrays[(int)Mesh.ArrayType.Index]  = selIdxs.ToArray();
+                int si = mesh.GetSurfaceCount();
+                mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Lines, arrays);
+                mesh.SurfaceSetMaterial(si, new StandardMaterial3D
+                {
+                    ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                    AlbedoColor = new Color(0.2f, 1.0f, 0.3f),
+                    EmissionEnabled = true, Emission = new Color(0.1f, 0.6f, 0.15f),
+                });
+            }
+
+            // Hovered edge (only if not already selected) — yellow
+            if (_hoveredEdge.HasValue && !_selectedEdges.Contains(_hoveredEdge.Value) &&
+                _edgeLocalPoints.TryGetValue(_hoveredEdge.Value, out var hpts) && hpts.Length >= 2)
+            {
+                var hIdxs = new int[(hpts.Length - 1) * 2];
+                for (int i = 0; i < hpts.Length - 1; i++)
+                { hIdxs[i * 2] = i; hIdxs[i * 2 + 1] = i + 1; }
+                var arrays = new Godot.Collections.Array();
+                arrays.Resize((int)Mesh.ArrayType.Max);
+                arrays[(int)Mesh.ArrayType.Vertex] = hpts;
+                arrays[(int)Mesh.ArrayType.Index]  = hIdxs;
+                int si = mesh.GetSurfaceCount();
+                mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Lines, arrays);
+                mesh.SurfaceSetMaterial(si, new StandardMaterial3D
+                {
+                    ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                    AlbedoColor = new Color(1.0f, 1.0f, 0.2f),
+                    EmissionEnabled = true, Emission = new Color(0.6f, 0.6f, 0.05f),
+                });
+            }
+
+            if (mesh.GetSurfaceCount() == 0)
             {
                 _edgeHighlightMesh.Visible = false;
                 return;
             }
 
-            var lineIdxs = new int[(pts.Length - 1) * 2];
-            for (int i = 0; i < pts.Length - 1; i++)
-            {
-                lineIdxs[i * 2]     = i;
-                lineIdxs[i * 2 + 1] = i + 1;
-            }
-
-            var arrays = new Godot.Collections.Array();
-            arrays.Resize((int)Mesh.ArrayType.Max);
-            arrays[(int)Mesh.ArrayType.Vertex] = pts;
-            arrays[(int)Mesh.ArrayType.Index]  = lineIdxs;
-
-            var highlightMesh = new ArrayMesh();
-            highlightMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Lines, arrays);
-
-            bool sel = _selectedEdge.HasValue;
-            var mat = new StandardMaterial3D
-            {
-                ShadingMode     = BaseMaterial3D.ShadingModeEnum.Unshaded,
-                AlbedoColor     = sel ? new Color(0.2f, 1.0f, 0.3f) : new Color(1.0f, 1.0f, 0.2f),
-                EmissionEnabled = true,
-                Emission        = sel ? new Color(0.1f, 0.6f, 0.15f) : new Color(0.6f, 0.6f, 0.05f),
-            };
-            highlightMesh.SurfaceSetMaterial(0, mat);
-
-            _edgeHighlightMesh.Mesh    = highlightMesh;
+            _edgeHighlightMesh.Mesh    = mesh;
             _edgeHighlightMesh.Visible = true;
         }
 

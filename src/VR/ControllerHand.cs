@@ -107,8 +107,9 @@ namespace SplineSculptor.VR
         // Edge hover / selection state
         private SurfaceNode? _hoveredEdgeSurfNode;
         private SurfaceEdge  _hoveredEdge;
-        private SurfaceNode? _selectedEdgeSurfNode;
-        private SurfaceEdge  _selectedEdgeValue;
+        // Tracks which (node, edge) pairs have been visually marked as selected,
+        // so we can clear them without walking the whole scene tree.
+        private readonly List<(SurfaceNode node, SurfaceEdge edge)> _selectedEdgeVisuals = new();
 
         private static readonly SurfaceEdge[] AllEdges =
             { SurfaceEdge.UMin, SurfaceEdge.UMax, SurfaceEdge.VMin, SurfaceEdge.VMax };
@@ -399,7 +400,12 @@ namespace SplineSculptor.VR
                             }
                         }
                         else if (ActiveTool == SelectionTool.Edge)
-                            SelectHoveredEdge();
+                        {
+                            if (_hoveredEdgeSurfNode != null)
+                                SelectHoveredEdge();
+                            else
+                                ClearEdgeSelection(); // trigger in open space = clear
+                        }
                         else if (ActiveTool == SelectionTool.Surface)
                             SelectNearestSurface(tipPos);
                     }
@@ -830,16 +836,36 @@ namespace SplineSculptor.VR
             var polyNode = _hoveredEdgeSurfNode.GetParent() as PolysurfaceNode;
             if (polyNode?.Data == null || _hoveredEdgeSurfNode.Surface == null) return;
 
-            _selectedEdgeSurfNode?.SetSelectedEdge(null);
-            _selectedEdgeSurfNode = _hoveredEdgeSurfNode;
-            _selectedEdgeValue    = _hoveredEdge;
-            _selectedEdgeSurfNode.SetSelectedEdge(_hoveredEdge);
+            var node = _hoveredEdgeSurfNode;
+            var edge = _hoveredEdge;
+            var er   = new EdgeRef(node.Surface, polyNode.Data, edge);
 
-            var er = new EdgeRef(_hoveredEdgeSurfNode.Surface, polyNode.Data, _hoveredEdge);
-            Selection?.ModifyEdgeSelection(er, SelectionModifier.Replace);
-            Selection?.SelectSurface(_hoveredEdgeSurfNode.Surface);
-            Selection?.SelectPolysurface(polyNode.Data);
-            GD.Print($"[VR Select] Edge {_hoveredEdge} on '{polyNode.Data.Name}'");
+            // XOR toggle: selecting an already-selected edge deselects it.
+            // Trigger in open space (no hovered edge) clears all — handled in HandleTrigger.
+            bool wasSelected = _selectedEdgeVisuals.Contains((node, edge));
+            if (wasSelected)
+            {
+                node.RemoveSelectedEdge(edge);
+                _selectedEdgeVisuals.Remove((node, edge));
+                Selection?.ModifyEdgeSelection(er, SelectionModifier.Remove);
+            }
+            else
+            {
+                node.AddSelectedEdge(edge);
+                _selectedEdgeVisuals.Add((node, edge));
+                Selection?.ModifyEdgeSelection(er, SelectionModifier.Add);
+                Selection?.SelectSurface(node.Surface);
+                Selection?.SelectPolysurface(polyNode.Data);
+            }
+            GD.Print($"[VR Select] Edge {edge} on '{polyNode.Data.Name}' " +
+                     $"({(wasSelected ? "deselected" : "added")}, total={_selectedEdgeVisuals.Count})");
+        }
+
+        private void ClearEdgeSelection()
+        {
+            foreach (var (n, e) in _selectedEdgeVisuals) n.RemoveSelectedEdge(e);
+            _selectedEdgeVisuals.Clear();
+            Selection?.ClearEdges();
         }
 
         // ─── Surface selection ────────────────────────────────────────────────────
