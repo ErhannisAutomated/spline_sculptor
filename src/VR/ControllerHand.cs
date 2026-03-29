@@ -125,7 +125,9 @@ namespace SplineSculptor.VR
         private PageId CurrentPage => _pageIds.Count > 0 ? _pageIds.Peek() : PageId.Root;
 
         // Paint-select state (right hand)
-        private readonly HashSet<ControlPointHandle> _paintedThisDrag = new();
+        private readonly HashSet<ControlPointHandle>                   _paintedThisDrag      = new();
+        private readonly HashSet<(SurfaceNode, SurfaceEdge)>           _paintedEdgesThisDrag = new();
+        private readonly HashSet<SurfaceNode>                          _paintedSurfsThisDrag = new();
         private bool _paintTriggerHeld = false;
 
         // Hull-select state (right hand)
@@ -566,40 +568,141 @@ namespace SplineSculptor.VR
 
         private void HandlePaintSelect(bool triggerDown, Vector3 tipPos)
         {
+            var effectiveTool = ActiveTool == SelectionTool.Auto ? SelectionTool.Point : ActiveTool;
+
             if (triggerDown && !_paintTriggerHeld)
             {
                 // Stroke start
                 _paintTriggerHeld = true;
                 _paintedThisDrag.Clear();
+                _paintedEdgesThisDrag.Clear();
+                _paintedSurfsThisDrag.Clear();
 
                 if (ActiveSelectionModifier == SelectionModifier.Replace)
-                    Selection?.ClearHandles();
+                {
+                    if (effectiveTool == SelectionTool.Point)   Selection?.ClearHandles();
+                    else if (effectiveTool == SelectionTool.Edge)    ClearEdgeSelection();
+                    else if (effectiveTool == SelectionTool.Surface) Selection?.ClearSurfaces();
+                }
             }
             else if (!triggerDown && _paintTriggerHeld)
             {
                 // Stroke end
                 _paintTriggerHeld = false;
                 _paintedThisDrag.Clear();
+                _paintedEdgesThisDrag.Clear();
+                _paintedSurfsThisDrag.Clear();
             }
 
             if (!_paintTriggerHeld || SceneRoot == null) return;
 
-            // Each frame: select/deselect/toggle handles within hover radius of tip
-            foreach (var child in SceneRoot.GetChildren())
+            // Replace was handled at stroke start (clear); now just Add
+            var mod = ActiveSelectionModifier == SelectionModifier.Replace
+                ? SelectionModifier.Add
+                : ActiveSelectionModifier;
+
+            if (effectiveTool == SelectionTool.Point)
             {
-                if (child is not PolysurfaceNode polyNode) continue;
-                foreach (var handle in polyNode.AllHandles())
+                // Each frame: select/deselect/toggle handles within hover radius of tip
+                foreach (var child in SceneRoot.GetChildren())
                 {
-                    if (_paintedThisDrag.Contains(handle)) continue; // each handle once per stroke
-                    if (tipPos.DistanceTo(handle.GlobalGrabPosition) > HoverRadius) continue;
+                    if (child is not PolysurfaceNode polyNode) continue;
+                    foreach (var handle in polyNode.AllHandles())
+                    {
+                        if (_paintedThisDrag.Contains(handle)) continue;
+                        if (tipPos.DistanceTo(handle.GlobalGrabPosition) > HoverRadius) continue;
+                        _paintedThisDrag.Add(handle);
+                        Selection?.ModifyHandleSelection(handle, mod);
+                    }
+                }
+            }
+            else if (effectiveTool == SelectionTool.Edge)
+            {
+                foreach (var child in SceneRoot.GetChildren())
+                {
+                    if (child is not PolysurfaceNode polyNode) continue;
+                    foreach (var surfNode in polyNode.AllSurfaceNodes())
+                    {
+                        if (surfNode.Surface == null || polyNode.Data == null) continue;
+                        foreach (var edge in AllEdges)
+                        {
+                            if (_paintedEdgesThisDrag.Contains((surfNode, edge))) continue;
+                            if (!EdgeNearPoint(surfNode, edge, tipPos, HoverRadius)) continue;
+                            _paintedEdgesThisDrag.Add((surfNode, edge));
+                            PaintSelectEdge(surfNode, polyNode, edge, mod);
+                        }
+                    }
+                }
+            }
+            else if (effectiveTool == SelectionTool.Surface)
+            {
+                foreach (var child in SceneRoot.GetChildren())
+                {
+                    if (child is not PolysurfaceNode polyNode) continue;
+                    foreach (var surfNode in polyNode.AllSurfaceNodes())
+                    {
+                        if (_paintedSurfsThisDrag.Contains(surfNode)) continue;
+                        if (surfNode.Surface == null || polyNode.Data == null) continue;
+                        if (!SurfaceNearPoint(surfNode, tipPos, HoverRadius)) continue;
+                        _paintedSurfsThisDrag.Add(surfNode);
+                        Selection?.ModifySurfaceSelection(surfNode.Surface, mod);
+                        if (mod != SelectionModifier.Remove)
+                            Selection?.SelectPolysurface(polyNode.Data, additive: true);
+                    }
+                }
+            }
+        }
 
-                    _paintedThisDrag.Add(handle);
+        /// <summary>Returns true if any boundary polyline point of the edge is within <paramref name="radius"/> of <paramref name="pt"/>.</summary>
+        private static bool EdgeNearPoint(SurfaceNode surfNode, SurfaceEdge edge, Vector3 pt, float radius)
+        {
+            int count = surfNode.GetEdgePointCount(edge);
+            for (int i = 0; i < count; i++)
+                if (pt.DistanceTo(surfNode.GetEdgeWorldPoint(edge, i)) <= radius)
+                    return true;
+            return false;
+        }
 
-                    // Replace was handled at stroke start (clear); now just Add
-                    var mod = ActiveSelectionModifier == SelectionModifier.Replace
-                        ? SelectionModifier.Add
-                        : ActiveSelectionModifier;
-                    Selection?.ModifyHandleSelection(handle, mod);
+        /// <summary>Returns true if any boundary polyline point of any edge is within <paramref name="radius"/> of <paramref name="pt"/>.</summary>
+        private static bool SurfaceNearPoint(SurfaceNode surfNode, Vector3 pt, float radius)
+        {
+            foreach (var edge in new[] { SurfaceEdge.UMin, SurfaceEdge.UMax, SurfaceEdge.VMin, SurfaceEdge.VMax })
+                if (EdgeNearPoint(surfNode, edge, pt, radius)) return true;
+            return false;
+        }
+
+        /// <summary>Applies paint-select modifier for one edge, updating both visual state and SelectionManager.</summary>
+        private void PaintSelectEdge(SurfaceNode surfNode, PolysurfaceNode polyNode, SurfaceEdge edge, SelectionModifier mod)
+        {
+            if (surfNode.Surface == null || polyNode.Data == null) return;
+            var er = new EdgeRef(surfNode.Surface, polyNode.Data, edge);
+            bool alreadySel = _selectedEdgeVisuals.Contains((surfNode, edge));
+
+            if (mod == SelectionModifier.Add && !alreadySel)
+            {
+                surfNode.AddSelectedEdge(edge);
+                _selectedEdgeVisuals.Add((surfNode, edge));
+                Selection?.ModifyEdgeSelection(er, SelectionModifier.Add);
+            }
+            else if (mod == SelectionModifier.Remove && alreadySel)
+            {
+                surfNode.RemoveSelectedEdge(edge);
+                _selectedEdgeVisuals.Remove((surfNode, edge));
+                Selection?.ModifyEdgeSelection(er, SelectionModifier.Remove);
+            }
+            else if (mod == SelectionModifier.XOR)
+            {
+                if (alreadySel)
+                {
+                    surfNode.RemoveSelectedEdge(edge);
+                    _selectedEdgeVisuals.Remove((surfNode, edge));
+                    Selection?.ModifyEdgeSelection(er, SelectionModifier.Remove);
+                }
+                else
+                {
+                    surfNode.AddSelectedEdge(edge);
+                    _selectedEdgeVisuals.Add((surfNode, edge));
+                    Selection?.ModifyEdgeSelection(er, SelectionModifier.Add);
                 }
             }
         }
@@ -647,11 +750,13 @@ namespace SplineSculptor.VR
 
             var hull = previewPts.Count >= 4 ? Build3DConvexHull(previewPts) : null;
 
-            // Clear previous preview state
+            // Clear previous handle preview state
             foreach (var h in _hullPreviewHandles) h.IsPreviewSelected = false;
             _hullPreviewHandles.Clear();
 
-            if (hull == null) return;
+            // Preview is only shown for Point/Auto mode (edge/surface have no preview visual yet)
+            var effectiveTool = ActiveTool == SelectionTool.Auto ? SelectionTool.Point : ActiveTool;
+            if (effectiveTool != SelectionTool.Point || hull == null) return;
 
             foreach (var child in SceneRoot.GetChildren())
             {
@@ -686,26 +791,88 @@ namespace SplineSculptor.VR
                 return;
             }
 
-            if (ActiveSelectionModifier == SelectionModifier.Replace)
-                Selection?.ClearHandles();
-
+            var effectiveTool = ActiveTool == SelectionTool.Auto ? SelectionTool.Point : ActiveTool;
             var mod = ActiveSelectionModifier == SelectionModifier.Replace
                 ? SelectionModifier.Add
                 : ActiveSelectionModifier;
 
-            int count = 0;
-            foreach (var child in SceneRoot.GetChildren())
+            if (effectiveTool == SelectionTool.Point)
             {
-                if (child is not PolysurfaceNode polyNode) continue;
-                foreach (var handle in polyNode.AllHandles())
-                {
-                    if (!IsInsideConvexHull(hull, handle.GlobalPosition)) continue;
-                    Selection?.ModifyHandleSelection(handle, mod);
-                    count++;
-                }
-            }
+                if (ActiveSelectionModifier == SelectionModifier.Replace)
+                    Selection?.ClearHandles();
 
-            GD.Print($"[VR Hull] {_hullPath.Count} path pts → {hull.Count}-face hull → {count} handles.");
+                int count = 0;
+                foreach (var child in SceneRoot.GetChildren())
+                {
+                    if (child is not PolysurfaceNode polyNode) continue;
+                    foreach (var handle in polyNode.AllHandles())
+                    {
+                        if (!IsInsideConvexHull(hull, handle.GlobalPosition)) continue;
+                        Selection?.ModifyHandleSelection(handle, mod);
+                        count++;
+                    }
+                }
+                GD.Print($"[VR Hull] {_hullPath.Count} path pts → {hull.Count}-face hull → {count} handles.");
+            }
+            else if (effectiveTool == SelectionTool.Edge)
+            {
+                if (ActiveSelectionModifier == SelectionModifier.Replace)
+                    ClearEdgeSelection();
+
+                int count = 0;
+                foreach (var child in SceneRoot.GetChildren())
+                {
+                    if (child is not PolysurfaceNode polyNode) continue;
+                    foreach (var surfNode in polyNode.AllSurfaceNodes())
+                    {
+                        if (surfNode.Surface == null || polyNode.Data == null) continue;
+                        foreach (var edge in AllEdges)
+                        {
+                            // Include the edge if any of its boundary points are inside the hull
+                            bool inside = false;
+                            int ptCount = surfNode.GetEdgePointCount(edge);
+                            for (int i = 0; i < ptCount && !inside; i++)
+                                if (IsInsideConvexHull(hull, surfNode.GetEdgeWorldPoint(edge, i)))
+                                    inside = true;
+                            if (!inside) continue;
+                            PaintSelectEdge(surfNode, polyNode, edge, mod);
+                            count++;
+                        }
+                    }
+                }
+                GD.Print($"[VR Hull] {_hullPath.Count} path pts → {hull.Count}-face hull → {count} edges.");
+            }
+            else if (effectiveTool == SelectionTool.Surface)
+            {
+                if (ActiveSelectionModifier == SelectionModifier.Replace)
+                    Selection?.ClearSurfaces();
+
+                int count = 0;
+                foreach (var child in SceneRoot.GetChildren())
+                {
+                    if (child is not PolysurfaceNode polyNode) continue;
+                    foreach (var surfNode in polyNode.AllSurfaceNodes())
+                    {
+                        if (surfNode.Surface == null || polyNode.Data == null) continue;
+                        // Include the surface if any boundary point is inside the hull
+                        bool inside = false;
+                        foreach (var edge in AllEdges)
+                        {
+                            int ptCount = surfNode.GetEdgePointCount(edge);
+                            for (int i = 0; i < ptCount && !inside; i++)
+                                if (IsInsideConvexHull(hull, surfNode.GetEdgeWorldPoint(edge, i)))
+                                    inside = true;
+                            if (inside) break;
+                        }
+                        if (!inside) continue;
+                        Selection?.ModifySurfaceSelection(surfNode.Surface, mod);
+                        if (mod != SelectionModifier.Remove)
+                            Selection?.SelectPolysurface(polyNode.Data, additive: true);
+                        count++;
+                    }
+                }
+                GD.Print($"[VR Hull] {_hullPath.Count} path pts → {hull.Count}-face hull → {count} surfaces.");
+            }
         }
 
         // ─── 3-D convex hull (incremental / gift-wrapping) ────────────────────────
