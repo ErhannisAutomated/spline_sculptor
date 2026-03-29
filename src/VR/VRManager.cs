@@ -288,23 +288,43 @@ namespace SplineSculptor.VR
 		// ─── Surface operations ───────────────────────────────────────────────────
 
 		/// <summary>
-		/// If one or more edges are selected, attach a patch to each.
-		/// Otherwise spawn a standalone patch.
+		/// 0 edges selected  → spawn a new standalone patch.
+		/// 1 edge selected   → attach a new patch to that edge.
+		/// 2 edges selected  → toggle G0 constraint between them.
 		/// </summary>
 		private void AttachOrSpawn()
 		{
 			var edges = _selection.SelectedEdges;
-			if (edges.Count > 0)
+			if (edges.Count >= 2)
 			{
-				foreach (var er in edges)
-				{
-					var cmd = new AttachPatchCommand(er.Poly, er.Surface, er.Edge);
-					_scene.UndoStack.Execute(cmd);
-					GD.Print($"[VRManager] Attached patch to {er.Edge} of '{er.Poly.Name}'.");
-				}
+				ToggleG0BetweenEdges(edges[0], edges[1]);
+			}
+			else if (edges.Count == 1)
+			{
+				var er = edges[0];
+				var cmd = new AttachPatchCommand(er.Poly, er.Surface, er.Edge);
+				_scene.UndoStack.Execute(cmd);
+				GD.Print($"[VRManager] Attached patch to {er.Edge} of '{er.Poly.Name}'.");
 			}
 			else
 				SpawnPatch($"Patch {_scene.Polysurfaces.Count + 1}");
+		}
+
+		private void ToggleG0BetweenEdges(EdgeRef erA, EdgeRef erB)
+		{
+			if (erA.Poly != erB.Poly)
+			{
+				GD.Print("[VRManager] G0 constraint requires both edges on the same polysurface.");
+				return;
+			}
+			if (erA.Surface == erB.Surface && erA.Edge == erB.Edge)
+			{
+				GD.Print("[VRManager] Both selected edges are the same — select two distinct edges.");
+				return;
+			}
+			var cmd = new ToggleG0ConstraintCommand(erA, erB);
+			_scene.UndoStack.Execute(cmd);
+			GD.Print($"[VRManager] Toggled G0 constraint between edges.");
 		}
 
 		private void AttachToSelected(SurfaceEdge edge)

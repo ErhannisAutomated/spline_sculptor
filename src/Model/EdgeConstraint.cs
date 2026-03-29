@@ -19,6 +19,12 @@ namespace SplineSculptor.Model
         public SurfaceEdge EdgeB { get; set; }
         public Continuity Type { get; set; }
 
+        /// <summary>
+        /// When true, edgeB's k-index is reversed relative to edgeA's.
+        /// EnforceG0 maps A[k] → B[len-1-k] instead of B[k].
+        /// </summary>
+        public bool Reversed { get; set; } = false;
+
         public EdgeConstraint(
             SculptSurface surfA, SurfaceEdge edgeA,
             SculptSurface surfB, SurfaceEdge edgeB,
@@ -43,10 +49,10 @@ namespace SplineSculptor.Model
             SurfaceEdge srcEdge = movedSurface == SurfaceA ? EdgeA : EdgeB;
             SurfaceEdge dstEdge = movedSurface == SurfaceA ? EdgeB : EdgeA;
 
-            EnforceG0(src, srcEdge, dst, dstEdge);
+            EnforceG0(src, srcEdge, dst, dstEdge, Reversed);
             if (Type == Continuity.G1)
             {
-                EnforceG1(src, srcEdge, dst, dstEdge);
+                EnforceG1(src, srcEdge, dst, dstEdge, Reversed);
                 // EnforceG0 fires GeometryChanged synchronously, so UpdateHandlePositions
                 // runs before EnforceG1 has modified the inner rows — handles end up at
                 // G0-only positions. Re-firing the event here syncs handles to the final
@@ -57,7 +63,8 @@ namespace SplineSculptor.Model
 
         private static void EnforceG0(
             SculptSurface src, SurfaceEdge srcEdge,
-            SculptSurface dst, SurfaceEdge dstEdge)
+            SculptSurface dst, SurfaceEdge dstEdge,
+            bool reversed)
         {
             var srcGeo = src.Geometry;
             var dstGeo = dst.Geometry;
@@ -71,7 +78,8 @@ namespace SplineSculptor.Model
             for (int k = 0; k < len; k++)
             {
                 var (srcU, srcV) = GetEdgeCP(srcGeo, srcEdge, k, boundary: true);
-                var (dstU, dstV) = GetEdgeCP(dstGeo, dstEdge, k, boundary: true);
+                int dstK = reversed ? len - 1 - k : k;
+                var (dstU, dstV) = GetEdgeCP(dstGeo, dstEdge, dstK, boundary: true);
                 dstGeo.ControlPoints[dstU, dstV] = srcGeo.ControlPoints[srcU, srcV];
             }
 
@@ -80,7 +88,8 @@ namespace SplineSculptor.Model
 
         private static void EnforceG1(
             SculptSurface src, SurfaceEdge srcEdge,
-            SculptSurface dst, SurfaceEdge dstEdge)
+            SculptSurface dst, SurfaceEdge dstEdge,
+            bool reversed)
         {
             var srcGeo = src.Geometry;
             var dstGeo = dst.Geometry;
@@ -96,10 +105,11 @@ namespace SplineSculptor.Model
                 // Second row of src (inner control point that defines tangent)
                 var (su2, sv2) = GetEdgeCP(srcGeo, srcEdge, k, boundary: false);
 
+                int dstK = reversed ? len - 1 - k : k;
                 // Boundary row of dst
-                var (du, dv) = GetEdgeCP(dstGeo, dstEdge, k, boundary: true);
+                var (du, dv) = GetEdgeCP(dstGeo, dstEdge, dstK, boundary: true);
                 // Second row of dst (to be adjusted)
-                var (du2, dv2) = GetEdgeCP(dstGeo, dstEdge, k, boundary: false);
+                var (du2, dv2) = GetEdgeCP(dstGeo, dstEdge, dstK, boundary: false);
 
                 // G1: dst inner = 2 * boundary - src inner (reflection across boundary)
                 Vector3 boundary = srcGeo.ControlPoints[su, sv];
