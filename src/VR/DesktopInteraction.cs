@@ -589,7 +589,7 @@ namespace SplineSculptor.VR
                     ClearEdgeSelection();
                     foreach (var (node, edge, er) in matched)
                     {
-                        node.SetSelectedEdge(edge);
+                        node.AddSelectedEdge(edge);
                         _selectedEdgeNodes.Add((node, edge));
                         Selection?.ModifyEdgeSelection(er, SelectionModifier.Add);
                     }
@@ -825,15 +825,15 @@ namespace SplineSculptor.VR
             switch (mod)
             {
                 case SelectionModifier.Replace:
-                    foreach (var (n, _) in _selectedEdgeNodes) n.SetSelectedEdge(null);
+                    foreach (var (n, e) in _selectedEdgeNodes) n.RemoveSelectedEdge(e);
                     _selectedEdgeNodes.Clear();
-                    surfNode.SetSelectedEdge(edge);
+                    surfNode.AddSelectedEdge(edge);
                     _selectedEdgeNodes.Add((surfNode, edge));
                     Selection?.ModifyEdgeSelection(er, SelectionModifier.Replace);
                     break;
 
                 case SelectionModifier.Add:
-                    surfNode.SetSelectedEdge(edge);
+                    surfNode.AddSelectedEdge(edge);
                     _selectedEdgeNodes.Add((surfNode, edge));
                     Selection?.ModifyEdgeSelection(er, SelectionModifier.Add);
                     break;
@@ -843,13 +843,13 @@ namespace SplineSculptor.VR
                         x => x.node == surfNode && x.edge == edge);
                     if (xi >= 0)
                     {
-                        _selectedEdgeNodes[xi].node.SetSelectedEdge(null);
+                        _selectedEdgeNodes[xi].node.RemoveSelectedEdge(edge);
                         _selectedEdgeNodes.RemoveAt(xi);
                         Selection?.ModifyEdgeSelection(er, SelectionModifier.Remove);
                     }
                     else
                     {
-                        surfNode.SetSelectedEdge(edge);
+                        surfNode.AddSelectedEdge(edge);
                         _selectedEdgeNodes.Add((surfNode, edge));
                         Selection?.ModifyEdgeSelection(er, SelectionModifier.Add);
                     }
@@ -860,7 +860,7 @@ namespace SplineSculptor.VR
                         x => x.node == surfNode && x.edge == edge);
                     if (ri >= 0)
                     {
-                        _selectedEdgeNodes[ri].node.SetSelectedEdge(null);
+                        _selectedEdgeNodes[ri].node.RemoveSelectedEdge(edge);
                         _selectedEdgeNodes.RemoveAt(ri);
                         Selection?.ModifyEdgeSelection(er, SelectionModifier.Remove);
                     }
@@ -870,8 +870,8 @@ namespace SplineSculptor.VR
 
         private void ClearEdgeSelection()
         {
-            foreach (var (node, _) in _selectedEdgeNodes)
-                node.SetSelectedEdge(null);
+            foreach (var (node, edge) in _selectedEdgeNodes)
+                node.RemoveSelectedEdge(edge);
             _selectedEdgeNodes.Clear();
             Selection?.ClearEdges();
         }
